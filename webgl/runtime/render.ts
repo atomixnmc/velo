@@ -2282,7 +2282,7 @@ function quad_points(m: Affine2, rc: Rect): number[] {
 	]
 }
 
-const outline_dirs = [vec2(-1, 0), vec2(1, 0), vec2(0, -1), vec2(0, 1), vec2(-0.7, -0.7), vec2(0.7, -0.7), vec2(-0.7, 0.7), vec2(0.7, 0.7)]
+const shadow_dirs = [vec2(-1, 0), vec2(1, 0), vec2(0, -1), vec2(0, 1)]
 
 class GfxMeasure implements TextMeasurer {
 	gfx: Gfx
@@ -2541,15 +2541,56 @@ export class Renderer {
 
 	draw_text_fx(l: Label, x: number, y: number, text: string, size: number, align: HAlign, valign: VAlign, family: string, k: number) {
 		const g = this.gfx
-		if (l.shadow_color.a > 0) {
+		if (l.shadow_color.a > 0 && l.color.a > 0) {
 			const o = l.shadow_offset.mul(k)
-			g.draw_text(Math.trunc(x + o.x), Math.trunc(y + o.y), text, { size, color: l.shadow_color, align, valign, family })
+			const sa = (l.shadow_color.a * l.color.a) / 255
+			const spread = Math.max(k * 0.9, 0.75)
+			for (let i = 0; i < 5; i++) {
+				const dx = i > 0 ? shadow_dirs[i - 1].x * spread : 0
+				const dy = i > 0 ? shadow_dirs[i - 1].y * spread : 0
+				const a = Math.round(i > 0 ? sa * 0.22 : sa * 0.55)
+				if (a > 0) {
+					g.draw_text(x + o.x + dx, y + o.y + dy, text, {
+						size,
+						color: rgba(l.shadow_color.r, l.shadow_color.g, l.shadow_color.b, a),
+						align,
+						valign,
+						family,
+					})
+				}
+			}
 		}
-		if (l.outline_color.a > 0 && l.outline_width > 0) {
-			const w = l.outline_width * k
-			for (const d of outline_dirs) g.draw_text(Math.trunc(x + d.x * w + 0.5), Math.trunc(y + d.y * w + 0.5), text, { size, color: l.outline_color, align, valign, family })
+		if (l.outline_color.a > 0 && l.outline_width > 0 && l.color.a > 0) {
+			const oa = Math.round((l.outline_color.a * l.color.a) / 255)
+			if (oa > 0) {
+				const oc = rgba(l.outline_color.r, l.outline_color.g, l.outline_color.b, oa)
+				const w = l.outline_width * k
+				const dpr = this.gfx.dpr || 1
+				const dev_w = w * dpr
+				let rings = Math.ceil(dev_w / 1.0)
+				if (rings < 1) rings = 1
+				else if (rings > 8) rings = 8
+				for (let ring = 1; ring <= rings; ring++) {
+					const rad = (w * ring) / rings
+					const rad_dev = rad * dpr
+					let n = Math.ceil((2 * Math.PI * rad_dev) / 1.25)
+					if (n < 8) n = 8
+					else if (n > 32) n = 32
+					const ang_offset = ring * 0.35
+					for (let i = 0; i < n; i++) {
+						const ang = (2 * Math.PI * i) / n + ang_offset
+						g.draw_text(x + Math.cos(ang) * rad, y + Math.sin(ang) * rad, text, {
+							size,
+							color: oc,
+							align,
+							valign,
+							family,
+						})
+					}
+				}
+			}
 		}
-		g.draw_text(Math.trunc(x), Math.trunc(y), text, { size, color: l.color, align, valign, family })
+		g.draw_text(x, y, text, { size, color: l.color, align, valign, family })
 	}
 
 	draw_text_input(t: TextInput, m: Affine2) {

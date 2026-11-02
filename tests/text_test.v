@@ -192,3 +192,29 @@ fn test_font_asset_and_label_font() {
 	s.unload()
 	assert db.entry(id)?.refs == 0
 }
+
+fn test_label_outline() {
+	mut n := core.Node.new('HpText')
+	n.add_component(&render.UITransform{
+		size: core.vec2(200, 22)
+	})
+	mut l := n.add_component(&render.Label{
+		text:          'HP: 100 / 100'
+		size:          16
+		color:         core.white
+		align:         'center'
+		valign:        'middle'
+		shrink:        true
+		outline_color: core.rgba(10, 10, 26, 255)
+		outline_width: 3.0
+	})
+	assert l.outline_color.a == 255
+	assert l.outline_width == 3.0
+	assert l.shrink
+	assert l.text_point() == core.vec2(0, 0)
+
+	m := Mono{}
+	b := render.layout_text(l.text, f32(l.size), l.line_spacing, l.wrap, l.shrink, 200, 22, 6, m)
+	assert b.lines == ['HP: 100 / 100']
+	assert b.size == 16
+}

@@ -627,7 +627,7 @@ fn (r &Renderer) draw_text_f(x f32, y f32, text string, cfg gg.TextCfg) {
 
 // draw_text_fx draws one line with the label's outline and shadow under it (`k` = node scale, for offsets).
 fn (mut r Renderer) draw_text_fx(l &Label, p core.Vec2, text string, cfg gg.TextCfg, k f32) {
-	if l.shadow_color.a > 0 {
+	if l.shadow_color.a > 0 && l.color.a > 0 {
 		// Soft shadow: a core copy plus four slightly spread, fainter ones, so the edge feathers instead of
 		// looking like a hard duplicate. Follows the label's own alpha so fades take the shadow along.
 		o := l.shadow_offset.mul(k)
@@ -644,32 +644,51 @@ fn (mut r Renderer) draw_text_fx(l &Label, p core.Vec2, text string, cfg gg.Text
 			}
 			r.draw_text_f(p.x + o.x + dx, p.y + o.y + dy, text, gg.TextCfg{
 				...cfg
-				color: gg.Color{l.shadow_color.r, l.shadow_color.g, l.shadow_color.b, u8(a)}
+				color: gg.Color{l.shadow_color.r, l.shadow_color.g, l.shadow_color.b, u8(a + 0.5)}
 			})
 		}
 		r.draw_calls += 5
 	}
-	if l.outline_color.a > 0 && l.outline_width > 0 {
-		w := l.outline_width * k
-		oc := gg.TextCfg{
-			...cfg
-			color: to_gg(l.outline_color)
-		}
-		// Sample the ring densely (about one copy per 2px of circumference, 8..24), plus an inner ring for
-		// thick outlines, so wide strokes come out solid instead of a stair-stepped smear.
-		mut n := int(math.ceil(f64(w) * 3))
-		n = if n < 8 { 8 } else if n > 24 { 24 } else { n }
-		mut drawn := 0
-		rings := if w > 2.5 { 2 } else { 1 }
-		for ring in 0 .. rings {
-			rad := if ring == 0 { w } else { w * 0.5 }
-			for i in 0 .. n {
-				ang := f32(2 * math.pi) * f32(i) / f32(n) + f32(ring) * 0.3
-				r.draw_text_f(p.x + math.cosf(ang) * rad, p.y + math.sinf(ang) * rad, text, oc)
-				drawn++
+	if l.outline_color.a > 0 && l.outline_width > 0 && l.color.a > 0 {
+		oa := u8(f32(l.outline_color.a) * f32(l.color.a) / 255.0 + 0.5)
+		if oa > 0 {
+			w := l.outline_width * k
+			oc := gg.TextCfg{
+				...cfg
+				color: gg.Color{l.outline_color.r, l.outline_color.g, l.outline_color.b, oa}
 			}
+			scale := if r.ctx.ft.scale <= 0 { f32(1) } else { r.ctx.ft.scale }
+			dev_w := w * scale
+			// Number of concentric rings: ensure radial spacing between adjacent rings
+			// (and the innermost ring to center) is at most ~1.0 device pixel.
+			// This completely eliminates hollow gaps between the outline and the text.
+			mut rings := int(math.ceil(f64(dev_w / 1.0)))
+			if rings < 1 {
+				rings = 1
+			} else if rings > 8 {
+				rings = 8
+			}
+			mut drawn := 0
+			for ring in 1 .. rings + 1 {
+				rad := w * f32(ring) / f32(rings)
+				rad_dev := rad * scale
+				// Angular sample count: step along circumference by ~1.25 device pixels
+				// so adjacent samples overlap solidly without gaps or scallop teeth.
+				mut n := int(math.ceil(f64(2.0 * math.pi * rad_dev / 1.25)))
+				if n < 8 {
+					n = 8
+				} else if n > 32 {
+					n = 32
+				}
+				ang_offset := f32(ring) * 0.35
+				for i in 0 .. n {
+					ang := f32(2 * math.pi) * f32(i) / f32(n) + ang_offset
+					r.draw_text_f(p.x + math.cosf(ang) * rad, p.y + math.sinf(ang) * rad, text, oc)
+					drawn++
+				}
+			}
+			r.draw_calls += drawn
 		}
-		r.draw_calls += drawn
 	}
 	r.draw_text_f(p.x, p.y, text, cfg)
 	r.draw_calls++
@@ -724,10 +743,6 @@ fn (mut r Renderer) draw_text_input(t &TextInput, m core.Affine2) {
 }
 
 const shadow_dirs = [core.vec2(-1, 0), core.vec2(1, 0), core.vec2(0, -1), core.vec2(0, 1)]
-
-const outline_dirs =[core.vec2(-1, 0), core.vec2(1, 0), core.vec2(0, -1),
-	core.vec2(0, 1), core.vec2(-0.7, -0.7), core.vec2(0.7, -0.7),
-	core.vec2(-0.7, 0.7), core.vec2(0.7, 0.7)]
 
 // image_for uploads the texture to the GPU on first use, and re-uploads it when the file changes (hot reload).
 fn (mut r Renderer) image_for(t &assets.Texture) ?gg.Image {
