@@ -256,22 +256,77 @@ pub fn (mut k Kine2D) reload() {
 	k.load_from(mut db) or { eprintln('[Kine2D] ${k.node.path()}: ${err}') }
 }
 
+const default_kine_cache = &KineCache{}
+
+pub fn kine_cache() &KineCache {
+	return default_kine_cache
+}
+
+pub struct CachedSkeleton {
+pub mut:
+	hash u64
+	data SkeletonData
+}
+
+pub struct CachedAtlas {
+pub mut:
+	hash  u64
+	atlas Atlas
+}
+
+pub struct KineCache {
+pub mut:
+	skeletons map[string]&CachedSkeleton
+	atlases   map[string]&CachedAtlas
+}
+
 fn (mut k Kine2D) load_from(mut db assets.AssetDatabase) ! {
 	// data/atlas may hold IDs or paths.
 	data_id := db.resolve(k.data.id) or { return error('asset "${k.data.id}" not found') }
 	atlas_id := db.resolve(k.atlas.id) or { return error('asset "${k.atlas.id}" not found') }
-	skel_text := db.load[assets.TextAsset](data_id)!
-	skel_src := skel_text.text
-	db.release(data_id)
-	atlas_text := db.load[assets.TextAsset](atlas_id)!
-	atlas_src := atlas_text.text
-	db.release(atlas_id)
-	mut skeleton := parse_skeleton(skel_src) or {
-		return error('${db.path_of(data_id) or { '' }}: ${err}')
+	data_entry := db.entry(data_id) or { return error('asset "${data_id}" not found') }
+	atlas_entry := db.entry(atlas_id) or { return error('asset "${atlas_id}" not found') }
+
+	mut cache := kine_cache()
+
+	mut skeleton := SkeletonData{}
+	if cached := cache.skeletons[data_id] {
+		if cached.hash == data_entry.hash {
+			skeleton = cached.data
+		}
 	}
-	mut atlas := parse_atlas(atlas_src) or {
-		return error('${db.path_of(atlas_id) or { '' }}: ${err}')
+	if skeleton.names.len == 0 && skeleton.animations.len == 0 {
+		skel_text := db.load[assets.TextAsset](data_id)!
+		skel_src := skel_text.text
+		db.release(data_id)
+		skeleton = parse_skeleton(skel_src) or {
+			return error('${db.path_of(data_id) or { '' }}: ${err}')
+		}
+		cache.skeletons[data_id] = &CachedSkeleton{
+			hash: data_entry.hash
+			data: skeleton
+		}
 	}
+
+	mut atlas := Atlas{}
+	if cached := cache.atlases[atlas_id] {
+		if cached.hash == atlas_entry.hash {
+			atlas = cached.atlas
+		}
+	}
+	if atlas.pages.len == 0 && atlas.regions.len == 0 {
+		atlas_text := db.load[assets.TextAsset](atlas_id)!
+		atlas_src := atlas_text.text
+		db.release(atlas_id)
+		atlas = parse_atlas(atlas_src) or {
+			return error('${db.path_of(atlas_id) or { '' }}: ${err}')
+		}
+		cache.atlases[atlas_id] = &CachedAtlas{
+			hash: atlas_entry.hash
+			atlas: atlas
+		}
+	}
+
 	if k.canvas_size.x > 0 && k.canvas_size.y > 0 {
 		skeleton.canvas_width = k.canvas_size.x
 		skeleton.canvas_height = k.canvas_size.y
@@ -302,7 +357,7 @@ fn (mut k Kine2D) load_from(mut db assets.AssetDatabase) ! {
 	k.regions = atlas
 	k.pages = pages
 	k.held = held
-	k.hashes = [data_id, atlas_id].map(if e := db.entry(it) { e.hash } else { u64(0) })
+	k.hashes = [data_entry.hash, atlas_entry.hash]
 	if k.animation != '' && k.animation !in skeleton.animations {
 		eprintln('[Kine2D] ${k.node.path()}: no animation "${k.animation}" (has: ${skeleton.names.join(', ')})')
 	}
