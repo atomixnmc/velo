@@ -1,10 +1,47 @@
 module kine2d
 
 import math
+import time
 import velo.core
 import velo.assets
 import velo.render
 import velo.serialize
+
+// Stats — rendering cost of all Kine2D components, for debug overlays. Totals since the last reset_stats().
+pub struct Stats {
+pub mut:
+	rigs     int // meshes() calls that produced geometry
+	meshes   int // TexturedMesh pieces returned
+	verts    int
+	build_us i64 // microseconds spent posing and building geometry
+	cached   int // meshes() calls answered from the per-frame cache
+}
+
+pub const stats = &Stats{}
+
+// reset_stats returns the totals gathered so far and starts again (call once per frame from an overlay).
+pub fn reset_stats() Stats {
+	out := *stats
+	unsafe {
+		mut st := stats
+		*st = Stats{}
+	}
+	return out
+}
+
+fn add_stats(meshes int, verts int, us i64, cached bool) {
+	unsafe {
+		mut st := stats
+		if cached {
+			st.cached++
+		} else {
+			st.rigs++
+			st.meshes += meshes
+			st.verts += verts
+			st.build_us += us
+		}
+	}
+}
 
 // register_builtins registers the Kine2D component so .scene files (and the editor) can use it.
 // Like physics, it is opt-in: call it from the game's component registration.
@@ -235,7 +272,14 @@ pub fn (k &Kine2D) meshes() []render.TexturedMesh {
 		return []
 	}
 	if k.is_spine {
-		return k.spine_meshes()
+		t0 := time.sys_mono_now()
+		out := k.spine_meshes()
+		mut nv := 0
+		for m in out {
+			nv += m.positions.len / 2
+		}
+		add_stats(out.len, nv, i64(time.sys_mono_now() - t0) / 1000, false)
+		return out
 	}
 	mut out := []render.TexturedMesh{}
 	for p in k.skeleton.build(k.regions, k.current_animation(), k.frame(), k.skin) {
@@ -260,26 +304,58 @@ pub fn (k &Kine2D) meshes() []render.TexturedMesh {
 }
 
 fn (k &Kine2D) spine_meshes() []render.TexturedMesh {
+	// consecutive pieces on the same page with the same blending are merged into one mesh (per-vertex
+	// colours carry each slot's tint), so a rig is a handful of draws instead of one per attachment
 	mut out := []render.TexturedMesh{}
+	mut pos := []f32{}
+	mut uvs := []f32{}
+	mut idx := []int{}
+	mut cols := []core.Color{}
+	mut cur_page := -1
+	mut cur_add := false
 	for p in k.spine.build(k.spine_atlas, k.current_spine_animation(), k.time, k.skin) {
 		tex := k.pages[p.page] or { continue }
 		if tex.width <= 0 || tex.height <= 0 {
 			continue
 		}
-		mut uvs := []f32{len: p.uvs.len}
-		for i := 0; i < uvs.len; i += 2 {
-			uvs[i] = p.uvs[i] / tex.width
-			uvs[i + 1] = p.uvs[i + 1] / tex.height
+		if (p.page != cur_page || p.additive != cur_add) && idx.len > 0 {
+			out << render.TexturedMesh{
+				texture:   k.pages[cur_page]
+				positions: pos
+				uvs:       uvs
+				indices:   idx
+				colors:    cols
+				color:     k.color
+				additive:  cur_add
+			}
+			pos = []f32{}
+			uvs = []f32{}
+			idx = []int{}
+			cols = []core.Color{}
 		}
-		c := k.color
+		cur_page = p.page
+		cur_add = p.additive
+		base := pos.len / 2
+		c := core.rgba(u8(255 * p.color.r), u8(255 * p.color.g), u8(255 * p.color.b), u8(255 * p.color.a))
+		for i := 0; i < p.uvs.len; i += 2 {
+			uvs << p.uvs[i] / tex.width
+			uvs << p.uvs[i + 1] / tex.height
+			cols << c
+		}
+		pos << p.positions
+		for i in p.indices {
+			idx << base + i
+		}
+	}
+	if idx.len > 0 {
 		out << render.TexturedMesh{
-			texture:   tex
-			positions: p.positions
+			texture:   k.pages[cur_page]
+			positions: pos
 			uvs:       uvs
-			indices:   p.indices
-			color:     core.rgba(u8(f32(c.r) * p.color.r), u8(f32(c.g) * p.color.g), u8(f32(c.b) * p.color.b),
-				u8(f32(c.a) * p.color.a))
-			additive:  p.additive
+			indices:   idx
+			colors:    cols
+			color:     k.color
+			additive:  cur_add
 		}
 	}
 	return out
