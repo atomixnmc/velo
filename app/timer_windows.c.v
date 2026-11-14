@@ -4,11 +4,11 @@ module app
 // overshoots the frame budget and every frame waits for a second vblank (a hard ~30 FPS ceiling).
 // Asking for 1 ms timer resolution while the game runs keeps the sleep inside the budget.
 #flag windows -lwinmm
-#include <windows.h>
-#include <timeapi.h>
 
+@[c_extern]
 fn C.timeBeginPeriod(u32) u32
 
+@[c_extern]
 fn C.timeEndPeriod(u32) u32
 
 fn precise_timers(on bool) {
