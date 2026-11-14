@@ -13,7 +13,9 @@ pub fn register_builtins(mut r serialize.Registry) {
 }
 
 // Kine2D — plays a skeletal animation exported by the Kine2D editor (BUILD writes `<name>.skel.json`,
-// `<name>.atlas.json` and `<name>.png`; put all three in the assets directory).
+// `<name>.atlas.json` and `<name>.png`; put all three in the assets directory). It also plays Spine 4.2 JSON
+// exports directly: point `data` at `<name>.json` and `atlas` at the Spine text `<name>.atlas` (pages in PNG
+// or lossless WebP next to it); the skeleton origin is drawn at the node, see spine_pose.v for what is applied.
 // The node's position is where the editor's canvas center was, so a rig drawn around the middle
 // of the editor canvas is drawn around the node. Node rotation, scale and flips (negative scale) apply.
 //
@@ -49,6 +51,9 @@ pub mut:
 	ctrl_failed bool              @[hide]
 	// Called for each `event=` the controller's clips pass (instead of polling params().take_events()).
 	on_event fn (name string) = unsafe { nil } @[hide]
+	is_spine    bool              @[hide] // `data` is a Spine 4.2 JSON export
+	spine       SpineData         @[hide]
+	spine_atlas SpAtlas           @[hide]
 }
 
 pub fn (mut k Kine2D) on_load() {
@@ -167,12 +172,29 @@ fn (mut k Kine2D) restart() {
 
 // animations lists the export's animation names in file order.
 pub fn (k &Kine2D) animations() []string {
-	return k.skeleton.names
+	return if k.is_spine { k.spine.names } else { k.skeleton.names }
 }
 
 // skins lists the export's skins (by name).
 pub fn (k &Kine2D) skins() []string {
+	if k.is_spine {
+		return k.spine.skins.map(it.name)
+	}
 	return k.skeleton.skins.map(if it.name != '' { it.name } else { it.id })
+}
+
+fn (k &Kine2D) current_name() string {
+	names := k.animations()
+	return if k.animation == '' && names.len > 0 { names[0] } else { k.animation }
+}
+
+// current_spine_animation: the Spine animation being played (Spine exports only).
+pub fn (k &Kine2D) current_spine_animation() ?SpAnimation {
+	name := k.current_name()
+	if name in k.spine.animations {
+		return k.spine.animations[name]
+	}
+	return none
 }
 
 // current_animation: the animation being played (the first one when `animation` is empty).
@@ -190,12 +212,19 @@ pub fn (k &Kine2D) current_animation() ?Animation {
 
 // duration of the current animation in seconds (0 if there is none).
 pub fn (k &Kine2D) duration() f32 {
+	if k.is_spine {
+		sa := k.current_spine_animation() or { return 0 }
+		return sa.duration
+	}
 	a := k.current_animation() or { return 0 }
 	return a.duration()
 }
 
 // frame: the current animation frame (fractional).
 pub fn (k &Kine2D) frame() f32 {
+	if k.is_spine {
+		return k.time * 30 // Spine keys are in seconds; 30 fps is the editor's default timeline rate
+	}
 	a := k.current_animation() or { return 0 }
 	return k.time * a.fps
 }
@@ -204,6 +233,9 @@ pub fn (k &Kine2D) frame() f32 {
 pub fn (k &Kine2D) meshes() []render.TexturedMesh {
 	if k.pages.len == 0 {
 		return []
+	}
+	if k.is_spine {
+		return k.spine_meshes()
 	}
 	mut out := []render.TexturedMesh{}
 	for p in k.skeleton.build(k.regions, k.current_animation(), k.frame(), k.skin) {
@@ -222,6 +254,32 @@ pub fn (k &Kine2D) meshes() []render.TexturedMesh {
 			uvs:       uvs
 			indices:   p.indices
 			color:     k.color
+		}
+	}
+	return out
+}
+
+fn (k &Kine2D) spine_meshes() []render.TexturedMesh {
+	mut out := []render.TexturedMesh{}
+	for p in k.spine.build(k.spine_atlas, k.current_spine_animation(), k.time, k.skin) {
+		tex := k.pages[p.page] or { continue }
+		if tex.width <= 0 || tex.height <= 0 {
+			continue
+		}
+		mut uvs := []f32{len: p.uvs.len}
+		for i := 0; i < uvs.len; i += 2 {
+			uvs[i] = p.uvs[i] / tex.width
+			uvs[i + 1] = p.uvs[i + 1] / tex.height
+		}
+		c := k.color
+		out << render.TexturedMesh{
+			texture:   tex
+			positions: p.positions
+			uvs:       uvs
+			indices:   p.indices
+			color:     core.rgba(u8(f32(c.r) * p.color.r), u8(f32(c.g) * p.color.g), u8(f32(c.b) * p.color.b),
+				u8(f32(c.a) * p.color.a))
+			additive:  p.additive
 		}
 	}
 	return out
@@ -299,6 +357,13 @@ fn (mut k Kine2D) load_from(mut db assets.AssetDatabase) ! {
 		skel_text := db.load[assets.TextAsset](data_id)!
 		skel_src := skel_text.text
 		db.release(data_id)
+		if is_spine_json(skel_src) {
+			// Spine 4.2 export: its own parser, atlas reader and pose code (not cached here)
+			atlas_text := db.load[assets.TextAsset](atlas_id)!
+			atlas_src := atlas_text.text
+			db.release(atlas_id)
+			return k.load_spine(mut db, data_id, atlas_id, skel_src, atlas_src)
+		}
 		skeleton = parse_skeleton(skel_src) or {
 			return error('${db.path_of(data_id) or { '' }}: ${err}')
 		}
@@ -353,6 +418,7 @@ fn (mut k Kine2D) load_from(mut db assets.AssetDatabase) ! {
 		}
 	}
 	k.drop()
+	k.is_spine = false
 	k.skeleton = skeleton
 	k.regions = atlas
 	k.pages = pages
@@ -360,6 +426,35 @@ fn (mut k Kine2D) load_from(mut db assets.AssetDatabase) ! {
 	k.hashes = [data_entry.hash, atlas_entry.hash]
 	if k.animation != '' && k.animation !in skeleton.animations {
 		eprintln('[Kine2D] ${k.node.path()}: no animation "${k.animation}" (has: ${skeleton.names.join(', ')})')
+	}
+}
+
+fn (mut k Kine2D) load_spine(mut db assets.AssetDatabase, data_id string, atlas_id string, skel_src string, atlas_src string) ! {
+	data := parse_spine_skeleton(skel_src) or { return error('${db.path_of(data_id) or { '' }}: ${err}') }
+	atlas := parse_spine_atlas(atlas_src) or { return error('${db.path_of(atlas_id) or { '' }}: ${err}') }
+	atlas_path := db.path_of(atlas_id) or { '' }
+	dir := if atlas_path.contains('/') { atlas_path.all_before_last('/') + '/' } else { '' }
+	mut pages := []&assets.Texture{}
+	mut held := []string{}
+	for page in atlas.pages {
+		tex := db.load[assets.Texture](dir + page.name) or {
+			for id in held {
+				db.release(id)
+			}
+			return error('atlas page "${dir}${page.name}": ${err}')
+		}
+		pages << tex
+		held << tex.id
+	}
+	k.drop()
+	k.is_spine = true
+	k.spine = data
+	k.spine_atlas = atlas
+	k.pages = pages
+	k.held = held
+	k.hashes = [data_id, atlas_id].map(if e := db.entry(it) { e.hash } else { u64(0) })
+	if k.animation != '' && k.animation !in data.animations {
+		eprintln('[Kine2D] ${k.node.path()}: no animation "${k.animation}" (has: ${data.names.join(', ')})')
 	}
 }
 
