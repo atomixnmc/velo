@@ -58,6 +58,14 @@ pub mut:
 	spin_var     f32
 	random_angle bool // start each particle at a random rotation
 	random_frame bool // pick a random frame of a sprite sheet texture (frame 0 otherwise)
+	// play the sheet's frames over each particle's life (flipbook fire / smoke), `frame_cycles` times;
+	// with random_frame each particle starts at a random frame
+	animate_frames bool
+	frame_cycles   f32 = 1
+	// a third colour key between start_color and end_color at `mid_time` (0..1 of the life), when use_mid_color
+	use_mid_color bool
+	mid_color     core.Color = core.white
+	mid_time      f32        = 0.5
 	// true: particles stay where they were born when the node moves (trails, smoke).
 	// false: they move with the node (an aura).
 	world_space  bool = true
@@ -176,7 +184,11 @@ pub fn (mut ps ParticleSystem) emit(count int) {
 	} else {
 		core.Affine2.identity()
 	}
-	frames := if ps.random_frame && ps.tex != unsafe { nil } { ps.tex.frame_count() } else { 1 }
+	frames := if (ps.random_frame || ps.animate_frames) && ps.tex != unsafe { nil } {
+		ps.tex.frame_count()
+	} else {
+		1
+	}
 	for _ in 0 .. n {
 		dir := f64(ps.angle + ps.spread * signed_rand()) * math.pi / 180
 		v := core.vec2(f32(math.cos(dir)), f32(math.sin(dir))).mul(ps.speed +
@@ -191,7 +203,7 @@ pub fn (mut ps ParticleSystem) emit(count int) {
 			size_end:   math.max(ps.end_size + ds, 0)
 			rotation:   if ps.random_angle { rand.f32() * 360 } else { 0 }
 			spin:       ps.spin + ps.spin_var * signed_rand()
-			frame:      if frames > 1 { rand.intn(frames) or { 0 } } else { 0 }
+			frame:      if frames > 1 && ps.random_frame { rand.intn(frames) or { 0 } } else { 0 }
 		}
 	}
 }
@@ -242,6 +254,32 @@ fn signed_rand() f32 {
 	return rand.f32() * 2 - 1
 }
 
+// color_at: the particle colour at `k` (0..1 of the life): start -> (mid ->) end.
+pub fn (ps &ParticleSystem) color_at(k f32) core.Color {
+	if !ps.use_mid_color {
+		return lerp_color(ps.start_color, ps.end_color, k)
+	}
+	t := if ps.mid_time <= 0.001 { f32(0.001) } else if ps.mid_time >= 0.999 { f32(0.999) } else { ps.mid_time }
+	if k < t {
+		return lerp_color(ps.start_color, ps.mid_color, k / t)
+	}
+	return lerp_color(ps.mid_color, ps.end_color, (k - t) / (1 - t))
+}
+
+// frame_of: the sheet frame a particle shows at `k` of its life.
+fn (ps &ParticleSystem) frame_of(p Particle, k f32) int {
+	if !ps.animate_frames || ps.tex == unsafe { nil } {
+		return p.frame
+	}
+	n := ps.tex.frame_count()
+	if n <= 1 {
+		return 0
+	}
+	cycles := if ps.frame_cycles > 0 { ps.frame_cycles } else { f32(1) }
+	f := int(k * cycles * f32(n))
+	return (p.frame + f) % n
+}
+
 // meshes is what the renderer draws (MeshDrawable): one quad per particle, in one draw call.
 pub fn (ps &ParticleSystem) meshes() []TexturedMesh {
 	if ps.particles.len == 0 {
@@ -267,7 +305,7 @@ pub fn (ps &ParticleSystem) meshes() []TexturedMesh {
 	for i, p in ps.particles {
 		k := p.age / p.life
 		h := (p.size_start + (p.size_end - p.size_start) * k) / 2
-		col := lerp_color(ps.start_color, ps.end_color, k)
+		col := ps.color_at(k)
 		quad := core.Affine2.trs(p.pos, p.rotation, core.vec2(h, h))
 		for c in [core.vec2(-1, -1), core.vec2(1, -1), core.vec2(1, 1),
 			core.vec2(-1, 1)] {
@@ -277,7 +315,7 @@ pub fn (ps &ParticleSystem) meshes() []TexturedMesh {
 			colors << col
 		}
 		if textured {
-			fx, fy, fw, fh := ps.tex.frame_rect(p.frame)
+			fx, fy, fw, fh := ps.tex.frame_rect(ps.frame_of(p, k))
 			u0, v0 := f32(fx) / ps.tex.width, f32(fy) / ps.tex.height
 			u1, v1 := f32(fx + fw) / ps.tex.width, f32(fy + fh) / ps.tex.height
 			uvs << [u0, v0, u1, v0, u1, v1, u0, v1]

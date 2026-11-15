@@ -1,0 +1,17 @@
+# Effects converted by tools/import_assets.py from tests/fixtures/import (Unity prefab, Godot 4 and Godot 3 scenes).
+node Imported {
+  node Background {
+    position = [480, 270]
+    Sprite { texture = @asset("b8c1e2a3")  size = [960, 540]  color = [40, 42, 55, 255] }
+  }
+  node UnityFire from @asset("prefabs/imported/Fire.scene") { position = [200, 380] }
+  node GodotCampfire from @asset("prefabs/imported/campfire.scene") { position = [480, 380] }
+  node GodotBurst from @asset("prefabs/imported/old_burst.scene") { position = [760, 300] }
+  node Replay { BurstReplay { } }
+  node UI {
+    Canvas { }
+    node T1 { position = [200, 470]  UITransform { size = [260, 24] }  Label { text = "Unity Fire.prefab"  size = 18  align = "center"  color = [235, 235, 235, 255] } }
+    node T2 { position = [480, 470]  UITransform { size = [260, 24] }  Label { text = "Godot 4 campfire.tscn"  size = 18  align = "center"  color = [235, 235, 235, 255] } }
+    node T3 { position = [760, 470]  UITransform { size = [260, 24] }  Label { text = "Godot 3 old_burst.tscn"  size = 18  align = "center"  color = [235, 235, 235, 255] } }
+  }
+}

@@ -293,12 +293,19 @@ node MoreCoins {
 |---|---|
 | `UITransform` | `size` + `anchor` of the node's rectangle (used by everything below, and for picking in the editor) |
 | `Panel` | fills the rectangle: `color`, `radius` (rounded corners when not rotated), `border_color`, `border_width`; stops clicks from reaching UI under it unless `block_input = false` |
-| `Label` | text (`\n` = new line); `align` left/center/right, `valign` top/middle/bottom, `font`, `line_spacing`. With a UITransform it aligns inside the rectangle, `wrap` breaks lines at its width and `shrink` lowers the size until the text fits. `shadow_color`/`shadow_offset` and `outline_color`/`outline_width` (alpha 0 = off) keep it readable on busy backgrounds |
+| `Label` | text (`\n` = new line); `align` left/center/right, `valign` top/middle/bottom, `font`, `line_spacing`. With a UITransform it aligns inside the rectangle, `wrap` breaks lines at its width and `shrink` lowers the size until the text fits. `shadow_color`/`shadow_offset` and `outline_color`/`outline_width` (alpha 0 = off) keep it readable on busy backgrounds. `valign = "middle"` centres the capital letters optically (the same in every font, whatever its line metrics). `padding` (x, y) keeps text off the edges, `offset` nudges it, `auto_size` makes the UITransform follow the text (so a horizontal `Layout` can centre an icon + text group on a button) |
 | `TextInput` | a one-line text field in the rectangle: click/tap to type (any language), arrows, Home/End, Backspace/Delete (held keys repeat), Enter submits, Esc or a click elsewhere stops. `text`, `placeholder`, `max_length`, `password`, `font`, `size`, colors; poll `changed` / `submitted`, or `focus()` / `blur()`. Phones and browsers show their keyboard while it has focus, and Esc does not quit the game then |
-| `Button` | click (or tap, with any finger) on the rectangle (UITransform or Sprite). `btn.on_click(fn (mut b render.Button) {...})` or poll `btn.clicked` (true for one frame). Tints the Panel/Sprite of `target` by state (`normal/hover/pressed/disabled_color`, multiplied with its own color); `interactable = false` disables it |
-| `Toggle` | with a Button on the same node: each click flips `is_on` and shows/hides the `checkmark` child (`changed` is true for that frame) |
-| `ProgressBar` | draws `back_color` + a `fill_color` part for `progress` (0..1); `direction` horizontal/vertical, `reverse` |
-| `ScrollView` | shows the `content` child through the rectangle: drag or mouse wheel, `inertia`, `elastic` edges, `clip`; `horizontal`/`vertical`; `scroll_to_top()`/`scroll_to_bottom()`. Buttons inside cancel their press once a drag starts, and are not clickable outside the viewport |
+| `Button` | click (or tap, with any finger) on the rectangle (UITransform or Sprite). `btn.on_click(fn (mut b render.Button) {...})` or poll `btn.clicked` (true for one frame). Tints the Panel/Sprite of `target` by state (`normal/hover/pressed/disabled_color`, multiplied with its own color); `interactable = false` disables it. States can swap the target Sprite's image (`hover_sprite`, `pressed_sprite`, `disabled_sprite`), add an additive highlight (`hover_glow`, `pressed_glow`) and scale the whole button with its text (`hover_scale`, `pressed_scale`, eased at `scale_speed`) |
+| `Toggle` | with a Button on the same node: each click flips `is_on` and shows/hides the `checkmark` child (`changed` is true for that frame); `on_sprite` / `off_sprite` swap the node's Sprite image; inside a `ToggleGroup` it is a radio button |
+| `ProgressBar` | draws `back_color` + a `fill_color` part for `progress` (0..1); `direction` horizontal/vertical, `reverse`; `smooth` eases the fill, `trail_color` leaves a delayed trail of the old value (health bars), a `Fill` child node (art) is sized instead of drawing the fill color |
+| `ScrollView` | shows the `content` child through the rectangle: drag or mouse wheel, `inertia`, `elastic` edges, `clip`; `horizontal`/`vertical`; `scroll_to_top()`/`scroll_to_bottom()`. Buttons inside cancel their press once a drag starts, and are not clickable outside the viewport. Scroll bars (`scrollbar`, `scrollbar_width`, `scrollbar_color`, `scrollbar_track`) show when the content is larger than the view and fade out when idle (`auto_hide`) |
+| `Mask` | clips the node's children to its rectangle (cards, portraits, frames whose content must not spill out) |
+| `Slider` | drag / click / arrow keys (when a Form focuses it) to set `value` in `min`..`max`, snapped to `step`; `vertical`, `reverse`, `interactable`; poll `changed`. Draws track, fill and handle in its colors, or places `Fill` / `Handle` child nodes (any Sprite art) instead |
+| `ToggleGroup` | radio buttons: the Toggles among its children are exclusive; `selected` (child name), `allow_none`, `select(name)`, `changed` |
+| `Draggable` / `DropZone` | drag and drop with the mouse or a finger: `tag` / `accepts` (comma list), `snap` to the zone, `reparent` into it, `return_home` otherwise (gliding with a `Spring`), lifted on top while dragged; `zone.on_drop(fn (mut z, mut d) {...})`, `d.dropped` / `d.cancelled` / `z.received`, `z.hovered` tints the zone |
+| `Spring` (core) | moves its node's position / scale / rotation toward targets with a damped spring: `to_position`, `to_scale`, `to_rotation`, `punch_scale`, `punch_position`, `snap`; `stiffness` / `damping`; `core.spring_step` for your own values |
+| `UIGroup` | one switch for a subtree: `alpha` fades everything under it (nested groups multiply), `interactable = false` disables every button, slider, field, toggle and drag in it |
+| `Form` | the fields under it as a form: Tab / Shift+Tab focus order, Enter in the last field or the `submit` button submits; `values()` (name -> value), `validate()` with TextInput `required`, `min_length`, `kind` (text / email / number / integer) and `errors`, invalid fields' Panel border in `invalid_color`; `on_submit` / `submitted` |
 | `Widget` | aligns the node to the edges/center of the parent's rectangle (or the screen if the parent has none); left + right (or top + bottom) stretches the UITransform. Aligned to the screen it stays inside the phone's safe area (notch, rounded corners, system bars); `safe_area = false` reaches the real edges (full-bleed backgrounds) |
 | `Joystick` | on-screen thumb stick: a finger (or the mouse) going down in the rectangle moves the `knob` child up to `radius` from the `base` child; read `value` (-1..1 per axis). `floating` moves the base under the thumb |
 | `Layout` | arranges children in a `vertical`/`horizontal` list or a `grid` (`spacing`, `padding`, `child_align`, `columns`); `resize` grows the UITransform to fit, which is what a ScrollView content needs |
@@ -320,6 +327,15 @@ a button inside it). For gameplay clicks, `render.pointer_over_ui(scene, input.m
 **Fonts.** `.ttf` and `.otf` files are Font assets: set a Label's or TextInput's `font` to one (in the Inspector, or
 `font = @asset("...")`), or `label.set_font(ref)` from code. Unset, text uses the app's font (`font_path` in `app.new`).
 `Input.text` holds what was typed this frame, and `input.was_typed(.backspace)` includes key repeats, for custom fields.
+
+**Panels that do not stretch.** A Sprite with `draw_mode = "sliced"` keeps its borders; `ornament_x` / `ornament_y`
+(frame pixels) mark an ornament in the middle of the edges (crest, gem) that keeps its proportions while only the
+plain bands beside it stretch; `draw_mode = "fit"` scales an image to fit its `size` without changing its aspect;
+`glow` (alpha = strength) adds an additive highlight in any mode. `python tools/gen_gothic_ui.py <dir>` generates a
+gothic kit for this: panels in three tiers (simple, medium with brackets, ornate with a crest and filigree), buttons
+with hover / pressed / disabled images, tabs, header, divider, slot, bars and scroll bar, in four palettes, with
+`ui_kit.json` holding each piece's borders and ornament spans (`--check` verifies that no stretched band holds a
+detail). `examples/ui_gothic` uses all of it.
 
 Limits: text ignores rotation; no rich text (colors/bold inside one Label), text selection, clipboard or IME
 candidate window in TextInput; a font file edited on disk needs a restart; Widget/Layout run in `update`, so the
@@ -482,8 +498,19 @@ Clicking outside the map still selects other nodes. Esc or W/E/R/Y leave the til
 the Inspector resizes the map and keeps every tile in its cell. On a prefab instance, painted tiles are an override of
 the whole `tiles` list. The Inspector shows a `[]int` field such as `tiles` as a value count, not a text field.
 
-Limits: one layer per TileMap (stack nodes for layers), no per-tile flip/rotation, autotiling, animated tiles or
-tile collisions yet (use colliders on child nodes); `tiles` is saved on one line.
+Per cell, a tile value can carry flips: `tile | render.tile_flip_x | render.tile_flip_y | render.tile_transpose`
+(Tiled's convention; `render.rotated_tile(frame, quarter_turns)` builds rotations, `render.tile_frame(v)` reads the
+frame back). `animations = [first, count, fps, ...]` animates cells showing `first` (water, torches).
+Autotiling: a terrain is 16 consecutive frames (`base + mask`, mask bits N=1 E=2 S=4 W=8, Tiled's edge-set order);
+`tm.paint_terrain(col, row, base)` paints and re-picks the neighbours, `tm.autotile_all(base)` fixes a whole map.
+`TileMapCollider { solid_tiles = [...] }` (velo.physics) turns solid cells into Box2D shapes (merged rectangles on
+orthogonal maps, one diamond / hexagon per cell otherwise) and follows runtime edits.
+Tiled maps: `python tools/import_assets.py tiled <map.tmj|map.tmx> --assets <assets>` (all four layouts, flips,
+animations, per-tile collision, object layers).
+
+Limits: one layer and one tileset per TileMap (stack nodes for layers; the Tiled importer does that), 16-tile
+edge terrains only (no 47-tile corner sets), terrains are painted from code (the editor paints plain tiles);
+`tiles` is saved on one line.
 
 ## Audio
 
@@ -604,7 +631,17 @@ position and rotation keys, scale keys, skins, attachment switching (display ind
 Editing the exported files hot reloads them. It draws textured triangles through the renderer's `render.MeshDrawable`
 hook, so any component with a `meshes() []render.TexturedMesh` method is drawn the same way.
 
-Limits: IK, transform and physics constraints and event keys are not applied yet (bake them into keys before exporting);
+**Spine 4.2 exports** play directly, too: point `data` at the Spine JSON (`"skeleton": {"spine": "4.2.x"}`) and
+`atlas` at its text `.atlas` (old `xy`/`size`/`orig`/`offset` or 4.x `bounds`/`offsets` form, rotated regions,
+several pages); pages may be PNG or lossless WebP (`velo.webp`, pure V; lossy WebP is rejected). `skin` picks a
+Spine skin (falling back to `default`). Applied: bone rotate/translate/scale/shear, slot attachment, rgba/rgb/alpha,
+draw order and 4.2 deform timelines, linear/stepped/bezier curves, all bone inherit modes, 1- and 2-bone IK (with
+mix/bendPositive keys), region, weighted mesh and linked-mesh attachments, additive blending. Not applied
+(listed in `SpineData.skipped` when a file uses them): transform/path/physics constraints, IK softness/stretch/
+compress, clipping, sequences, tint black, events, multiply/screen blending. `tests/spine42_test.v` checks real
+packs; poses match the official spine-core 4.2 runtime within 0.01 px.
+
+Limits: IK, transform and physics constraints and event keys are not applied yet for Kine2D exports (bake them into keys before exporting);
 the binary export (`.skel.bin`) is not read, only the JSON one; the editor cannot click-select a skeleton in the scene view
 (select it in the Hierarchy); `velo assets unused` does not know that the atlas uses its image.
 
@@ -639,6 +676,14 @@ $ v run tools/assetdb.v examples/demo/assets users sprites/coin.png
 sprites/coin.png used by:
   d2c8f1a9  prefabs/coin.scene
 ```
+
+**Optimizing for shipping**: `python tools/optimize_assets.py <assets> --webp --ogg --src <game src>` writes an
+optimized copy (default `build/assets_optimized`, the source is untouched): lossless PNG recompression, exact
+palette PNGs for images with at most 256 colours, lossless WebP when smaller (`--webp`), long WAVs to Ogg Vorbis
+(`--ogg`, needs ffmpeg), minified JSON, optional downscaling (`--max-size`). `.meta` files come along, path
+references in scenes follow renamed files, and the report lists code references to renamed paths and assets
+nothing seems to use. **Importing** from other engines: `tools/import_assets.py` (Unity prefabs, Godot scenes,
+Tiled maps). Feature comparison with Godot: [docs/godot_parity.md](docs/godot_parity.md).
 
 ## Editor
 

@@ -1,0 +1,5 @@
+# Converted from Godot: old_burst.tscn (tools/velo_import)
+# Approximations and unsupported settings are listed in the import report.
+node old_burst {
+  ParticleSystem { max_particles = 30  lifetime = 0.8  looping = false  duration = 0.8  playing = false  burst = 30  rate = 0  world_space = false  texture = @asset("imported/godot/fx/spark.png")  angle = 0  spread = 180  speed = 112.5  speed_var = 37.5  gravity = [0, 98]  shape = "point"  start_size = 4.5  end_size = 4.5  start_color = [128, 204, 255, 255]  end_color = [128, 204, 255, 255] }
+}

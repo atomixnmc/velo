@@ -1,6 +1,7 @@
 module app
 
 import gg
+import os
 import sokol.sapp
 import time
 import velo.core
@@ -60,6 +61,8 @@ mut:
 	last_ticks     i64
 	reload_timer   f32
 	fps            f32
+	prof           FrameProfile // VELO_PROFILE=1: per-stage frame timing, printed every 2 s
+	capture        FrameCapture // VELO_CAPTURE=<png>: silent screenshot (capture.v)
 	safe_timer     f32
 }
 
@@ -120,8 +123,8 @@ pub fn (mut a App) load_scene(key string) ! {
 pub fn (mut a App) run() {
 	a.ctx = gg.new_context(
 		bg_color:     gg.Color{a.cfg.background.r, a.cfg.background.g, a.cfg.background.b, 255}
-		width:        if a.cfg.window_width > 0 { a.cfg.window_width } else { a.cfg.width }
-		height:       if a.cfg.window_height > 0 { a.cfg.window_height } else { a.cfg.height }
+		width:        if a.cfg.window_width > 0 && !capture_on() { a.cfg.window_width } else { a.cfg.width }
+		height:       if a.cfg.window_height > 0 && !capture_on() { a.cfg.window_height } else { a.cfg.height }
 		window_title: a.cfg.title
 		font_path:    if a.cfg.font_path != '' { a.cfg.font_path } else { system_font() }
 		init_fn:      on_init
@@ -129,18 +132,39 @@ pub fn (mut a App) run() {
 		cleanup_fn:   on_cleanup
 		event_fn:     on_event
 		user_data:    a
+		// 0 = gg does not sleep its fixed 60 Hz budget (pace_frame); vsync is turned back on below on the window.
+		swap_interval: 0
 	)
 	$if android {
 		// sokol asks for GLES 3.1 by default, which emulators and older devices lack; gg only needs 3.0.
 		a.ctx.window.gl.major_version = 3
 		a.ctx.window.gl.minor_version = 0
 	}
+	// Pace by vsync only. gg sleeps a fixed 60 Hz budget on top of vsync when its swap_interval is set
+	// (pace_frame); that drifts against 59/75/144 Hz displays, frames miss a vblank and 50 FPS snaps to 30.
+	// So gg gets swap_interval 0 and the sokol window gets vsync directly.
+	// on_frame caps at fallback_max_fps itself in case the platform ignores vsync.
+	unsafe {
+		mut win := &a.ctx.window // the field is not `mut` in gg; gcc builds reject the plain assignment
+		win.swap_interval = if vsync_off { 0 } else { 1 } // VELO_VSYNC=0: uncapped, for profiling
+	}
+	precise_timers(true) // Windows: 1 ms sleep granularity for the fallback cap (timer_windows.c.v)
 	a.ctx.run()
+	precise_timers(false)
 }
 
 fn on_init(mut a App) {
+	if capture_on() {
+		hide_window_for_capture()
+	}
 	a.renderer = render.new_renderer(a.ctx, a.db)
 	audio.start()
+	// VELO_MUTE=1 or a silent capture (VELO_CAPTURE): the device stays open (the mixer needs it) but the master
+	// gain is 0, so hidden test runs make no sound. Nothing else sets the master gain.
+	if capture_on() || os.getenv('VELO_MUTE') == '1' {
+		mut m := audio.mixer()
+		m.master = 0
+	}
 	a.load_scene(a.cfg.scene) or {
 		eprintln('[velo] scene load error: ${err}')
 		exit(1)
@@ -148,8 +172,60 @@ fn on_init(mut a App) {
 	a.last_ticks = time.ticks()
 }
 
+// fallback_max_fps caps the frame rate only when vsync is not honoured (frames arrive faster than this).
+const fallback_max_fps = 240
+
+// vsync_off: VELO_VSYNC=0 runs uncapped (profiling only).
+const vsync_off = os.getenv('VELO_VSYNC') == '0'
+
+// VELO_PROFILE=1 prints per-stage frame times every 2 s to stderr; VELO_PROFILE=<file> appends them to that file
+// (GUI builds on Windows have no console, so stderr is lost there). See render.profile_log.
+const profile_on = os.getenv('VELO_PROFILE') != ''
+
+// FrameProfile sums stage times (ns) and prints averages: update (scene logic), draw (CPU draw submission),
+// end (gg/sokol flush and GPU submit), outside (present, vsync wait, OS), worst full frame.
+struct FrameProfile {
+mut:
+	last_end i64
+	outside  i64
+	update   i64
+	draw     i64
+	end      i64
+	worst    i64
+	calls    i64
+	frames   int
+	since    i64
+}
+
+fn (mut p FrameProfile) add(update i64, draw i64, end i64, total i64, calls int) {
+	p.update += update
+	p.draw += draw
+	p.end += end
+	p.calls += calls
+	p.frames++
+	if total > p.worst {
+		p.worst = total
+	}
+	now := time.sys_mono_now()
+	if p.since == 0 {
+		p.since = now
+	}
+	if now - p.since >= 2_000_000_000 && p.frames > 0 {
+		n := f64(p.frames) * 1_000_000.0
+		line := '[velo] PROFILE fps=${f64(p.frames) / (f64(now - p.since) / 1_000_000_000.0):.1f} update_ms=${f64(p.update) / n:.2f} draw_ms=${f64(p.draw) / n:.2f} end_ms=${f64(p.end) / n:.2f} outside_ms=${f64(p.outside) / n:.2f} worst_in_frame_ms=${f64(p.worst) / 1_000_000.0:.1f} draw_calls=${p.calls / i64(p.frames)}'
+		render.profile_log(line)
+		p = FrameProfile{
+			last_end: p.last_end
+		}
+	}
+}
+
 fn on_frame(mut a App) {
-	now := time.ticks()
+	mut now := time.ticks()
+	if now - a.last_ticks < 1000 / fallback_max_fps && !vsync_off {
+		time.sleep(time.Duration(1000 / fallback_max_fps - (now - a.last_ticks)) * time.millisecond)
+		now = time.ticks()
+	}
 	mut dt := f32(now - a.last_ticks) / 1000.0
 	a.last_ticks = now
 	if dt > 0.1 {
@@ -174,6 +250,10 @@ fn on_frame(mut a App) {
 			}
 		}
 	}
+	t_start := time.sys_mono_now()
+	if a.prof.last_end > 0 {
+		a.prof.outside += t_start - a.prof.last_end // present / vsync / OS between frames
+	}
 	a.apply_fit(mut a.scene)
 	a.scene.update(dt)
 	a.sync_keyboard()
@@ -182,6 +262,7 @@ fn on_frame(mut a App) {
 	a.update_scene_change(dt)
 	audio.pump()
 
+	t_update := time.sys_mono_now()
 	a.ctx.begin()
 	a.renderer.base_clip =
 		render.Rect{a.fit.area_pos.x, a.fit.area_pos.y, a.fit.area_size.x, a.fit.area_size.y}
@@ -196,7 +277,14 @@ fn on_frame(mut a App) {
 			align: .right
 		)
 	}
-	a.ctx.end()
+	t_draw := time.sys_mono_now()
+	a.renderer.end_frame() // ctx.end(), or the PostProcess chain (render/postfx.v)
+	a.capture.capture_frame() // VELO_CAPTURE: read the finished frame before sokol swaps it (capture.v)
+	t_end := time.sys_mono_now()
+	if profile_on {
+		a.prof.add(t_update - t_start, t_draw - t_update, t_end - t_draw, t_end - t_start, a.renderer.draw_calls)
+	}
+	a.prof.last_end = t_end
 
 	for ev in a.db.drain_events() {
 		a.on_asset_event(ev)
@@ -281,6 +369,19 @@ fn (mut a App) update_scene_change(dt f32) {
 // loading_progress: 0..1 while the next scene's assets are decoded during a scene change, else 1.
 pub fn (a &App) loading_progress() f32 {
 	return a.preload.progress()
+}
+
+// preload decodes textures and sounds on worker threads before they are first drawn or played, so spawning
+// them later does not stall a frame. Keys are asset ids or paths (mounted folders work). Use it for assets a
+// scene creates from code (rigs, effects, HUD art), behind a fade or loading screen, and wait for
+// preload_done(). References are held until the next scene change completes.
+pub fn (mut a App) preload(keys []string) {
+	a.preload.add_keys(mut a.db, a.renderer, keys)
+}
+
+// preload_done: true once everything queued by preload (or a scene change) is decoded and uploaded.
+pub fn (a &App) preload_done() bool {
+	return a.preload.done()
 }
 
 fn (mut a App) draw_fade() {
@@ -426,7 +527,13 @@ fn on_event(e &gg.Event, mut a App) {
 		.touches_began, .touches_moved, .touches_ended, .touches_cancelled {
 			a.on_touch(e)
 		}
+		.unfocused {
+			a.input.focus_lost = true
+			a.input.release_all() // key-ups of keys held now never arrive
+		}
 		.suspended, .iconified {
+			a.input.focus_lost = true
+			a.input.release_all()
 			mut m := audio.mixer()
 			m.set_paused(true) // app in the background (phones) or minimized
 			a.store.save_if_changed() // a phone may kill a background app without warning

@@ -1,0 +1,76 @@
+[gd_scene load_steps=8 format=3 uid="uid://b1fire"]
+
+[ext_resource type="Texture2D" uid="uid://c1" path="res://fx/spark.png" id="1_spark"]
+[ext_resource type="Texture2D" uid="uid://c2" path="res://fx/flip.png" id="2_flip"]
+
+[sub_resource type="Gradient" id="Gradient_a"]
+offsets = PackedFloat32Array(0, 0.3, 1)
+colors = PackedColorArray(1, 1, 0.6, 0, 1, 0.4, 0, 1, 0.3, 0, 0, 0)
+
+[sub_resource type="GradientTexture1D" id="GradientTexture1D_a"]
+gradient = SubResource("Gradient_a")
+
+[sub_resource type="Curve" id="Curve_s"]
+_data = [Vector2(0, 1), 0.0, 0.0, 0, 0, Vector2(1, 0.25), 0.0, 0.0, 0, 0]
+point_count = 2
+
+[sub_resource type="CurveTexture" id="CurveTexture_s"]
+curve = SubResource("Curve_s")
+
+[sub_resource type="ParticleProcessMaterial" id="ParticleProcessMaterial_f"]
+emission_shape = 1
+emission_sphere_radius = 12.0
+direction = Vector3(0, -1, 0)
+spread = 20.0
+initial_velocity_min = 60.0
+initial_velocity_max = 120.0
+gravity = Vector3(0, -20, 0)
+scale_min = 0.5
+scale_max = 1.0
+scale_curve = SubResource("CurveTexture_s")
+color_ramp = SubResource("GradientTexture1D_a")
+angle_min = -180.0
+angle_max = 180.0
+
+[sub_resource type="CanvasItemMaterial" id="CanvasItemMaterial_add"]
+blend_mode = 1
+particles_animation = true
+particles_anim_h_frames = 6
+particles_anim_v_frames = 1
+particles_anim_loop = false
+
+[node name="Fire" type="Node2D"]
+position = Vector2(100, 200)
+
+[node name="Flames" type="GPUParticles2D" parent="."]
+material = SubResource("CanvasItemMaterial_add")
+amount = 48
+lifetime = 1.2
+texture = ExtResource("2_flip")
+process_material = SubResource("ParticleProcessMaterial_f")
+
+[node name="Embers" type="CPUParticles2D" parent="."]
+position = Vector2(0, -10)
+amount = 20
+lifetime = 2.0
+texture = ExtResource("1_spark")
+emission_shape = 3
+emission_rect_extents = Vector2(40, 5)
+direction = Vector2(0, -1)
+spread = 30.0
+gravity = Vector2(0, -30)
+initial_velocity_min = 20.0
+initial_velocity_max = 40.0
+angular_velocity_min = 90.0
+angular_velocity_max = 180.0
+scale_amount_min = 0.2
+scale_amount_max = 0.4
+color = Color(1, 0.7, 0.3, 1)
+
+[node name="Logo" type="Sprite2D" parent="Embers"]
+modulate = Color(1, 1, 1, 0.5)
+rotation = 0.785398
+texture = ExtResource("2_flip")
+hframes = 6
+frame = 1
+flip_h = true

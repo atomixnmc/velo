@@ -122,7 +122,7 @@ fn test_scene_round_trip() {
 	// the inspector sees `tiles` as a list, not as a Vec2/Color
 	info := reg.get('TileMap') or { panic('not registered') }
 	for f in info.fields {
-		assert f.is_list == (f.name == 'tiles')
+		assert f.is_list == (f.name in ['tiles', 'animations'])
 	}
 }
 

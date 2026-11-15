@@ -1,0 +1,103 @@
+# Built-in sprite effects (render/effects.v): one SpriteFx per cell. FxDemo animates dissolve / flash.
+node Effects {
+  node Background {
+    position = [480, 270]
+    Sprite { texture = @asset("b8c1e2a3")  size = [960, 540]  color = [70, 75, 90, 255] }
+  }
+  node flash {
+    position = [96, 95]  scale = [3, 3]
+    Sprite { texture = @asset("a1f3c9e2") }
+    SpriteFx { effect = "flash"  amount = 0.6  width = 0  color = [255, 255, 255, 255] }
+    FxDemo { }
+  }
+  node outline {
+    position = [288, 95]  scale = [3, 3]
+    Sprite { texture = @asset("3e7d5a10") }
+    SpriteFx { effect = "outline"  amount = 2  width = 0  color = [255, 220, 90, 255] }
+  }
+  node glow {
+    position = [480, 95]  scale = [3, 3]
+    Sprite { texture = @asset("a1f3c9e2") }
+    SpriteFx { effect = "glow"  amount = 4  width = 1  color = [120, 200, 255, 255] }
+  }
+  node dissolve {
+    position = [672, 95]  scale = [3, 3]
+    Sprite { texture = @asset("3e7d5a10") }
+    SpriteFx { effect = "dissolve"  amount = 0.5  width = 0.15  color = [255, 120, 30, 255] }
+    FxDemo { }
+  }
+  node hologram {
+    position = [864, 95]  scale = [3, 3]
+    Sprite { texture = @asset("a1f3c9e2") }
+    SpriteFx { effect = "hologram"  amount = 12  width = 1  color = [80, 220, 255, 255] }
+  }
+  node shine {
+    position = [96, 260]  scale = [3, 3]
+    Sprite { texture = @asset("3e7d5a10") }
+    SpriteFx { effect = "shine"  amount = 2  width = 0.25  color = [255, 255, 255, 200] }
+  }
+  node greyscale {
+    position = [288, 260]  scale = [3, 3]
+    Sprite { texture = @asset("a1f3c9e2") }
+    SpriteFx { effect = "greyscale"  amount = 1  width = 0  color = [255, 255, 255, 255] }
+  }
+  node hue_shift {
+    position = [480, 260]  scale = [3, 3]
+    Sprite { texture = @asset("3e7d5a10") }
+    SpriteFx { effect = "hue_shift"  amount = 0.5  width = 0  color = [255, 255, 255, 255] }
+  }
+  node wave {
+    position = [672, 260]  scale = [3, 3]
+    Sprite { texture = @asset("a1f3c9e2") }
+    SpriteFx { effect = "wave"  amount = 1.5  width = 2  color = [255, 255, 255, 255] }
+  }
+  node pixelate {
+    position = [864, 260]  scale = [3, 3]
+    Sprite { texture = @asset("3e7d5a10") }
+    SpriteFx { effect = "pixelate"  amount = 3  width = 0  color = [255, 255, 255, 255] }
+  }
+  node frozen {
+    position = [96, 425]  scale = [3, 3]
+    Sprite { texture = @asset("a1f3c9e2") }
+    SpriteFx { effect = "frozen"  amount = 0.8  width = 0  color = [150, 210, 255, 255] }
+  }
+  node petrify {
+    position = [288, 425]  scale = [3, 3]
+    Sprite { texture = @asset("3e7d5a10") }
+    SpriteFx { effect = "petrify"  amount = 0.9  width = 0  color = [170, 160, 150, 255] }
+  }
+  node tint_black {
+    position = [480, 425]  scale = [3, 3]
+    Sprite { texture = @asset("a1f3c9e2") }
+    SpriteFx { effect = "tint_black"  amount = 1  width = 0  color = [90, 0, 140, 255] }
+  }
+  node negative {
+    position = [672, 425]  scale = [3, 3]
+    Sprite { texture = @asset("3e7d5a10") }
+    SpriteFx { effect = "negative"  amount = 1  width = 0  color = [255, 255, 255, 255] }
+  }
+  node ghost {
+    position = [864, 425]  scale = [3, 3]
+    Sprite { texture = @asset("a1f3c9e2") }
+    SpriteFx { effect = "ghost"  amount = 0.2  width = 1  color = [160, 200, 255, 255] }
+  }
+  node Spine { SpineFxDemo { } }
+  node UI {
+    Canvas { }
+    node L0 { position = [96, 145]  UITransform { size = [180, 24] }  Label { text = "flash"  size = 18  align = "center"  color = [235, 235, 235, 255]  outline_color = [0, 0, 0, 255]  outline_width = 1.5 } }
+    node L1 { position = [288, 145]  UITransform { size = [180, 24] }  Label { text = "outline"  size = 18  align = "center"  color = [235, 235, 235, 255]  outline_color = [0, 0, 0, 255]  outline_width = 1.5 } }
+    node L2 { position = [480, 145]  UITransform { size = [180, 24] }  Label { text = "glow"  size = 18  align = "center"  color = [235, 235, 235, 255]  outline_color = [0, 0, 0, 255]  outline_width = 1.5 } }
+    node L3 { position = [672, 145]  UITransform { size = [180, 24] }  Label { text = "dissolve"  size = 18  align = "center"  color = [235, 235, 235, 255]  outline_color = [0, 0, 0, 255]  outline_width = 1.5 } }
+    node L4 { position = [864, 145]  UITransform { size = [180, 24] }  Label { text = "hologram"  size = 18  align = "center"  color = [235, 235, 235, 255]  outline_color = [0, 0, 0, 255]  outline_width = 1.5 } }
+    node L5 { position = [96, 310]  UITransform { size = [180, 24] }  Label { text = "shine"  size = 18  align = "center"  color = [235, 235, 235, 255]  outline_color = [0, 0, 0, 255]  outline_width = 1.5 } }
+    node L6 { position = [288, 310]  UITransform { size = [180, 24] }  Label { text = "greyscale"  size = 18  align = "center"  color = [235, 235, 235, 255]  outline_color = [0, 0, 0, 255]  outline_width = 1.5 } }
+    node L7 { position = [480, 310]  UITransform { size = [180, 24] }  Label { text = "hue_shift"  size = 18  align = "center"  color = [235, 235, 235, 255]  outline_color = [0, 0, 0, 255]  outline_width = 1.5 } }
+    node L8 { position = [672, 310]  UITransform { size = [180, 24] }  Label { text = "wave"  size = 18  align = "center"  color = [235, 235, 235, 255]  outline_color = [0, 0, 0, 255]  outline_width = 1.5 } }
+    node L9 { position = [864, 310]  UITransform { size = [180, 24] }  Label { text = "pixelate"  size = 18  align = "center"  color = [235, 235, 235, 255]  outline_color = [0, 0, 0, 255]  outline_width = 1.5 } }
+    node L10 { position = [96, 475]  UITransform { size = [180, 24] }  Label { text = "frozen"  size = 18  align = "center"  color = [235, 235, 235, 255]  outline_color = [0, 0, 0, 255]  outline_width = 1.5 } }
+    node L11 { position = [288, 475]  UITransform { size = [180, 24] }  Label { text = "petrify"  size = 18  align = "center"  color = [235, 235, 235, 255]  outline_color = [0, 0, 0, 255]  outline_width = 1.5 } }
+    node L12 { position = [480, 475]  UITransform { size = [180, 24] }  Label { text = "tint_black"  size = 18  align = "center"  color = [235, 235, 235, 255]  outline_color = [0, 0, 0, 255]  outline_width = 1.5 } }
+    node L13 { position = [672, 475]  UITransform { size = [180, 24] }  Label { text = "negative"  size = 18  align = "center"  color = [235, 235, 235, 255]  outline_color = [0, 0, 0, 255]  outline_width = 1.5 } }
+    node L14 { position = [864, 475]  UITransform { size = [180, 24] }  Label { text = "ghost"  size = 18  align = "center"  color = [235, 235, 235, 255]  outline_color = [0, 0, 0, 255]  outline_width = 1.5 } }
+  }
+}

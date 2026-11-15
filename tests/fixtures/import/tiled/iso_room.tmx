@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.11.0" orientation="isometric" renderorder="right-down" width="3" height="3" tilewidth="32" tileheight="16" infinite="0" nextlayerid="3" nextobjectid="2">
+ <tileset firstgid="1" source="terrain.tsx"/>
+ <layer id="1" name="Floor" width="3" height="3">
+  <data encoding="csv">
+1,2,0,2147483654,6,0,2684354561,0,1073741827
+</data>
+ </layer>
+ <objectgroup id="2" name="Spawns">
+  <object id="1" name="PlayerStart" x="16" y="8" width="0" height="0"><point/></object>
+ </objectgroup>
+</map>

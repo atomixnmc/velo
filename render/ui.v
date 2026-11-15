@@ -2,6 +2,7 @@ module render
 
 import math
 import velo.core
+import velo.assets
 
 // UI components. They live in the world like any other node (the scene has no camera, so world = screen):
 //
@@ -85,6 +86,9 @@ pub fn hit_test_world(n &core.Node, p core.Vec2) bool {
 }
 
 fn hit_test_in(n &core.Node, p core.Vec2, screen bool) bool {
+	if screen && !group_interactable(n) {
+		return false // under a UIGroup with interactable = false (or fully faded)
+	}
 	r := node_rect(n) or { return false }
 	if !r.has(node_point(n, p, screen)) {
 		return false
@@ -131,7 +135,7 @@ fn is_pointer_target(n &core.Node) bool {
 		if !c.enabled {
 			continue
 		}
-		if c is Button || c is ScrollView || c is Joystick || c is TextInput {
+		if c is Button || c is ScrollView || c is Joystick || c is TextInput || c is Slider || c is Draggable {
 			return true
 		}
 		if c is Panel && c.block_input {
@@ -223,22 +227,43 @@ pub type ClickHandler = fn (mut b Button)
 //       btn.on_click(fn (mut b render.Button) { println('clicked ${b.node.name}') })
 //   }
 // Or poll `btn.clicked`, true for the one frame the click happened.
+//
+// States can also swap the target Sprite's image (`hover_sprite` ...: unset = the normal image), add an
+// additive highlight (`hover_glow` / `pressed_glow`, alpha = strength) and scale the whole button with its
+// text and icons (`hover_scale` / `pressed_scale`, eased at `scale_speed`):
+//
+//   Button { hover_sprite = @asset("ui/btn_hover.png")  pressed_sprite = @asset("ui/btn_pressed.png")
+//            hover_scale = 1.04  pressed_scale = 0.95  hover_glow = [255, 220, 150, 60] }
 pub struct Button {
 	core.Component
 pub mut:
-	interactable   bool = true
-	target         string // path of the node to tint, relative to this node ('' = this node)
-	normal_color   core.Color = core.white
-	hover_color    core.Color = core.rgba(225, 225, 225, 255)
-	pressed_color  core.Color = core.rgba(170, 170, 170, 255)
-	disabled_color core.Color = core.rgba(140, 140, 140, 180)
-	hovered        bool           @[hide]
-	pressed        bool           @[hide]
-	pointer        u64            @[hide] // the pointer (Input.pointers) holding the button down
-	clicked        bool           @[hide]
-	handlers       []ClickHandler @[hide]
-	base_color     core.Color     @[hide] // the target's color before tinting
-	has_base       bool           @[hide]
+	interactable    bool = true
+	target          string // path of the node to tint, relative to this node ('' = this node)
+	normal_color    core.Color = core.white
+	hover_color     core.Color = core.rgba(225, 225, 225, 255)
+	pressed_color   core.Color = core.rgba(170, 170, 170, 255)
+	disabled_color  core.Color = core.rgba(140, 140, 140, 180)
+	hover_sprite    assets.AssetRef[assets.Texture]
+	pressed_sprite  assets.AssetRef[assets.Texture]
+	disabled_sprite assets.AssetRef[assets.Texture]
+	hover_glow      core.Color = core.Color{255, 255, 255, 0}
+	pressed_glow    core.Color = core.Color{255, 255, 255, 0}
+	hover_scale     f32        = 1
+	pressed_scale   f32        = 1
+	scale_speed     f32        = 18 // 1/s; 0 = jump
+	state           string @[hide] // normal / hover / pressed / disabled
+	normal_tex      assets.AssetRef[assets.Texture] @[hide] // the target's own image
+	has_normal_tex  bool           @[hide]
+	base_scale      core.Vec2      @[hide]
+	has_base_scale  bool           @[hide]
+	cur_scale       f32 = 1            @[hide]
+	hovered         bool           @[hide]
+	pressed         bool           @[hide]
+	pointer         u64            @[hide] // the pointer (Input.pointers) holding the button down
+	clicked         bool           @[hide]
+	handlers        []ClickHandler @[hide]
+	base_color      core.Color     @[hide] // the target's color before tinting
+	has_base        bool           @[hide]
 }
 
 pub fn (mut b Button) on_click(f ClickHandler) {
@@ -248,6 +273,12 @@ pub fn (mut b Button) on_click(f ClickHandler) {
 pub fn (mut b Button) on_destroy() {
 	b.set_tint(core.white) // leave the target as it was (matters when the node is reused, e.g. in the editor)
 	b.has_base = false
+	if b.state != '' && b.state != 'normal' {
+		b.show_state('normal')
+	}
+	if b.has_base_scale && b.node != unsafe { nil } {
+		b.node.scale = b.base_scale
+	}
 }
 
 pub fn (mut b Button) update(dt f32) {
@@ -256,6 +287,8 @@ pub fn (mut b Button) update(dt f32) {
 		b.hovered = false
 		b.pressed = false
 		b.set_tint(b.disabled_color)
+		b.show_state('disabled')
+		b.ease_scale(1, dt)
 		return
 	}
 	input := b.input()
@@ -290,13 +323,101 @@ pub fn (mut b Button) update(dt f32) {
 			b.pressed = false
 		}
 	}
-	b.set_tint(if b.pressed && inside {
-		b.pressed_color
+	state := if b.pressed && inside {
+		'pressed'
 	} else if b.hovered || inside {
-		b.hover_color
+		'hover'
 	} else {
-		b.normal_color
+		'normal'
+	}
+	b.set_tint(match state {
+		'pressed' { b.pressed_color }
+		'hover' { b.hover_color }
+		else { b.normal_color }
 	})
+	b.show_state(state)
+	b.ease_scale(match state {
+		'pressed' { b.pressed_scale }
+		'hover' { b.hover_scale }
+		else { f32(1) }
+	}, dt)
+}
+
+// target_node: the node whose Panel / Sprite shows the states.
+fn (b &Button) target_node() ?&core.Node {
+	if b.node == unsafe { nil } {
+		return none
+	}
+	if b.target == '' {
+		return b.node
+	}
+	return b.node.find(b.target)
+}
+
+// show_state swaps the target Sprite's image and glow for `state` (only when it changes).
+fn (mut b Button) show_state(state string) {
+	if state == b.state {
+		return
+	}
+	b.state = state
+	target := b.target_node() or { return }
+	mut s := target.get_component[Sprite]() or { return }
+	if !b.has_normal_tex {
+		b.normal_tex = s.texture
+		b.has_normal_tex = true
+	}
+	want := match state {
+		'hover' {
+			b.hover_sprite
+		}
+		'pressed' {
+			if b.pressed_sprite.is_set() { b.pressed_sprite } else { b.hover_sprite }
+		}
+		'disabled' {
+			b.disabled_sprite
+		}
+		else {
+			b.normal_tex
+		}
+	}
+
+	img := if want.is_set() { want } else { b.normal_tex }
+	if img.id != s.texture.id && img.is_set() {
+		s.set_texture(img)
+	}
+	s.glow = match state {
+		'hover' {
+			b.hover_glow
+		}
+		'pressed' {
+			if b.pressed_glow.a > 0 { b.pressed_glow } else { b.hover_glow }
+		}
+		else {
+			core.Color{255, 255, 255, 0}
+		}
+	}
+}
+
+// ease_scale moves the button's scale toward `k` times its own scale.
+fn (mut b Button) ease_scale(k f32, dt f32) {
+	if b.node == unsafe { nil } || (b.hover_scale == 1 && b.pressed_scale == 1 && b.cur_scale == 1) {
+		return
+	}
+	if !b.has_base_scale {
+		b.base_scale = b.node.scale
+		b.has_base_scale = true
+	}
+	if b.scale_speed <= 0 || dt <= 0 {
+		b.cur_scale = k
+	} else {
+		t := f32(1) - f32(math.exp(-b.scale_speed * dt))
+		b.cur_scale += (k - b.cur_scale) * t
+		if math.abs(b.cur_scale - k) < 0.0005 {
+			b.cur_scale = k
+		}
+	}
+	mut n := b.node
+	n.scale = b.base_scale.mul(b.cur_scale)
 }
 
 fn (mut b Button) set_tint(c core.Color) {
@@ -326,7 +447,10 @@ pub struct Toggle {
 pub mut:
 	is_on     bool
 	checkmark string = 'Checkmark'
-	changed   bool @[hide] // true for the frame `is_on` changed through a click
+	// optional images for the node's Sprite (a switch, a lit / unlit rune); unset = keep the Sprite's own
+	on_sprite  assets.AssetRef[assets.Texture]
+	off_sprite assets.AssetRef[assets.Texture]
+	changed    bool @[hide] // true for the frame `is_on` changed through a click
 }
 
 pub fn (mut t Toggle) on_load() {
@@ -337,6 +461,18 @@ pub fn (mut t Toggle) update(dt f32) {
 	t.changed = false
 	if btn := t.node.get_component[Button]() {
 		if btn.clicked {
+			// in a ToggleGroup (radio buttons) the group decides
+			if t.node.parent != unsafe { nil } {
+				if mut g := t.node.parent.get_component[ToggleGroup]() {
+					if g.enabled {
+						was := t.is_on
+						t.is_on = g.toggle_clicked(t.node.name, was)
+						t.changed = t.is_on != was
+						t.sync()
+						return
+					}
+				}
+			}
 			t.is_on = !t.is_on
 			t.changed = true
 		}
@@ -351,6 +487,14 @@ fn (mut t Toggle) sync() {
 	if mut c := t.node.find(t.checkmark) {
 		c.active = t.is_on
 	}
+	want := if t.is_on { t.on_sprite } else { t.off_sprite }
+	if want.is_set() {
+		if mut s := t.node.get_component[Sprite]() {
+			if s.texture.id != want.id {
+				s.set_texture(want)
+			}
+		}
+	}
 }
 
 // ProgressBar — draws a background and a fill covering `progress` (0..1) of the node's UITransform rectangle.
@@ -364,11 +508,78 @@ pub mut:
 	fill_color core.Color = core.rgba(90, 200, 120, 255)
 	back_color core.Color = core.rgba(0, 0, 0, 120)
 	radius     f32
+	// `smooth` (1/s, 0 = instant) eases the shown fill toward `progress`; with `trail_color` set, a drop
+	// leaves a trail of the old value that catches up after `trail_delay` seconds (health bars)
+	smooth      f32
+	trail_color core.Color = core.Color{255, 255, 255, 0}
+	trail_delay f32        = 0.4
+	// a child node of this name (any Sprite art) is sized to the fill instead of drawing fill_color
+	fill_node string = 'Fill'
+	shown     f32 = -1 @[hide] // the displayed progress
+	trail     f32 = -1 @[hide]
+	trail_wait f32 @[hide]
+}
+
+pub fn (mut p ProgressBar) update(dt f32) {
+	target := clamp01(p.progress)
+	if p.shown < 0 || p.smooth <= 0 {
+		p.shown = target
+	} else {
+		p.shown += (target - p.shown) * (1 - f32(math.exp(-p.smooth * dt)))
+	}
+	if p.trail < 0 || p.trail < p.shown {
+		p.trail = p.shown
+		p.trail_wait = p.trail_delay
+	} else if p.trail > p.shown {
+		p.trail_wait -= dt
+		if p.trail_wait <= 0 {
+			p.trail += (p.shown - p.trail) * (1 - f32(math.exp(-6 * dt)))
+			if p.trail - p.shown < 0.001 {
+				p.trail = p.shown
+			}
+		}
+	}
+	if p.node == unsafe { nil } {
+		return
+	}
+	if mut f := p.node.find(p.fill_node) {
+		r := node_rect(p.node) or { return }
+		fr := p.part(r, p.shown)
+		f.position = core.vec2(fr.x + fr.w / 2, fr.y + fr.h / 2)
+		if mut t := f.get_component[UITransform]() {
+			t.anchor = core.vec2(0.5, 0.5)
+			t.size = core.vec2(fr.w, fr.h)
+		}
+		if mut sp := f.get_component[Sprite]() {
+			sp.size = core.vec2(fr.w, fr.h)
+		}
+	}
+}
+
+// shown_progress: what the bar shows now (eased toward progress when smooth > 0).
+pub fn (p &ProgressBar) shown_progress() f32 {
+	return if p.shown < 0 { clamp01(p.progress) } else { p.shown }
+}
+
+// skinned: the fill is a child node with art.
+pub fn (p &ProgressBar) skinned() bool {
+	if p.fill_node == '' || p.node == unsafe { nil } {
+		return false
+	}
+	if _ := p.node.find(p.fill_node) {
+		return true
+	}
+	return false
 }
 
 // fill_rect: the filled part, in node space.
 pub fn (p &ProgressBar) fill_rect(r Rect) Rect {
-	k := clamp01(p.progress)
+	return p.part(r, clamp01(p.progress))
+}
+
+// part: the part of `r` covering `k` (0..1) of it, in the bar's direction.
+pub fn (p &ProgressBar) part(r Rect, k0 f32) Rect {
+	k := clamp01(k0)
 	if p.direction == 'vertical' {
 		h := r.h * k
 		return if p.reverse { Rect{r.x, r.y, r.w, h} } else { Rect{r.x, r.y + r.h - h, r.w, h} }
@@ -393,11 +604,20 @@ pub mut:
 	deceleration f32  = 4    // how fast the inertia slows down
 	elastic      bool = true // allow dragging past the edges, then spring back
 	wheel_speed  f32  = 40   // pixels per wheel step
-	dragging     bool      @[hide]
-	velocity     core.Vec2 @[hide]
-	tracking     bool      @[hide] // mouse went down inside the viewport, not yet a drag
-	press_pos    core.Vec2 @[hide] // viewport space
-	last_pos     core.Vec2 @[hide]
+	// Scroll bars along the right / bottom edge, shown only when the content is larger than the view;
+	// auto_hide fades them out a second after scrolling stops.
+	scrollbar       bool       = true
+	scrollbar_width f32        = 6
+	scrollbar_color core.Color = core.rgba(255, 255, 255, 150)
+	scrollbar_track core.Color = core.rgba(0, 0, 0, 50)
+	auto_hide       bool       = true
+	idle            f32       @[hide] // seconds since the content last moved
+	last_content    core.Vec2 @[hide]
+	dragging        bool      @[hide]
+	velocity        core.Vec2 @[hide]
+	tracking        bool      @[hide] // mouse went down inside the viewport, not yet a drag
+	press_pos       core.Vec2 @[hide] // viewport space
+	last_pos        core.Vec2 @[hide]
 }
 
 pub fn (mut s ScrollView) content_node() ?&core.Node {
@@ -407,6 +627,12 @@ pub fn (mut s ScrollView) content_node() ?&core.Node {
 pub fn (mut s ScrollView) update(dt f32) {
 	mut content := s.content_node() or { return }
 	view := node_rect(s.node) or { return }
+	if content.position != s.last_content || s.dragging {
+		s.idle = 0
+		s.last_content = content.position
+	} else {
+		s.idle += dt
+	}
 	input := s.input()
 	local := s.node.screen_matrix().inverse().apply(input.mouse)
 	inside := ui_hit(s.node, input.mouse)
@@ -461,6 +687,52 @@ pub fn (mut s ScrollView) update(dt f32) {
 	if s.clamp_content(mut content, view, k) {
 		s.velocity = core.Vec2{}
 	}
+}
+
+// scrollbar_rects: the track and thumb of the vertical (axis 1) or horizontal (axis 0) bar, in node space;
+// none when the content fits.
+pub fn (mut s ScrollView) scrollbar_rects(axis int) ?(Rect, Rect) {
+	content := s.content_node() or { return none }
+	view := node_rect(s.node) or { return none }
+	cr := node_rect(content) or { return none }
+	w := if s.scrollbar_width > 0 { s.scrollbar_width } else { f32(6) }
+	if axis == 1 {
+		len := cr.h * math.abs(content.scale.y)
+		if !s.vertical || len <= view.h + 0.5 {
+			return none
+		}
+		top := content.position.y + cr.y * math.abs(content.scale.y)
+		thumb := math.max(view.h * view.h / len, math.min(f32(24), view.h))
+		k := clamp01((view.y - top) / (len - view.h))
+		track := Rect{view.x + view.w - w - 2, view.y + 2, w, view.h - 4}
+		return track, Rect{track.x, track.y + k * (track.h - thumb), w, thumb}
+	}
+	len := cr.w * math.abs(content.scale.x)
+	if !s.horizontal || len <= view.w + 0.5 {
+		return none
+	}
+	left := content.position.x + cr.x * math.abs(content.scale.x)
+	thumb := math.max(view.w * view.w / len, math.min(f32(24), view.w))
+	k := clamp01((view.x - left) / (len - view.w))
+	track := Rect{view.x + 2, view.y + view.h - w - 2, view.w - 4, w}
+	return track, Rect{track.x + k * (track.w - thumb), track.y, thumb, w}
+}
+
+// scrollbar_alpha: 0..1 visibility of the bars (fades out after a second idle when auto_hide).
+pub fn (s &ScrollView) scrollbar_alpha() f32 {
+	if !s.scrollbar {
+		return 0
+	}
+	if !s.auto_hide {
+		return 1
+	}
+	return clamp01(1 - (s.idle - 1) / 0.4)
+}
+
+// Mask — clips the node's children to its UITransform rectangle (a ScrollView without scrolling): cards,
+// portraits, bars and lists whose content must not spill out of their frame.
+pub struct Mask {
+	core.Component
 }
 
 fn (s &ScrollView) mask(d core.Vec2) core.Vec2 {

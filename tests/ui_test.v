@@ -131,12 +131,12 @@ fn test_scroll_view_wheel_is_clamped_and_clips_hits() {
 		anchor: core.vec2(0, 0)
 	})
 	view.add_child(mut content)
-	mut far := ui_node('Far', core.vec2(50, 250), core.vec2(100, 20))
-	content.add_child(mut far)
+	mut far_node := ui_node('Far', core.vec2(50, 250), core.vec2(100, 20))
+	content.add_child(mut far_node)
 	s.add(mut view)
 
 	// item below the viewport cannot be hit
-	assert !render.hit_test(far, core.vec2(50, 250))
+	assert !render.hit_test(far_node, core.vec2(50, 250))
 	s.input.mouse = core.vec2(50, 50)
 	s.input.mouse_scroll(0, -3) // wheel down: content moves up
 	s.update(0.016)
@@ -148,7 +148,7 @@ fn test_scroll_view_wheel_is_clamped_and_clips_hits() {
 		s.input.end_frame()
 	}
 	assert content.position.y == -200 // 300 content - 100 viewport
-	assert render.hit_test(far, core.vec2(50, 50))
+	assert render.hit_test(far_node, core.vec2(50, 50))
 	mut sv := view.get_component[render.ScrollView]()?
 	sv.scroll_to_top()
 	assert content.position.y == 0

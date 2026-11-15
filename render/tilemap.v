@@ -35,11 +35,38 @@ pub mut:
 	stagger_odd bool       = true // staggered and hex layouts: shift the odd rows / columns (false: the even ones)
 	hex_side    f32   // hex layouts: edge length along the stagger axis, 0 = half the tile
 	tiles       []int // columns * rows frame indices, row by row; -1 = empty (missing entries are empty too)
+	// Animated tiles, three numbers per animation: first frame, frame count, frames per second. A cell holding
+	// the first frame plays first .. first + count - 1 (water, torches, lava).
+	animations []int
 	tex         &assets.Texture = unsafe { nil } @[hide]
 	loaded      string          @[hide]
 }
 
 pub const no_tile = -1
+
+// Per-cell flips, added to a tile's frame index (as Tiled does): tile_flip_x | tile_flip_y | tile_transpose.
+// tile_transpose swaps the tile's x and y (with a flip it makes 90-degree rotations, see rotated_tile).
+// A frame index uses the low 24 bits.
+pub const tile_flip_x = 1 << 24
+pub const tile_flip_y = 1 << 25
+pub const tile_transpose = 1 << 26
+pub const tile_frame_mask = (1 << 24) - 1
+
+// tile_frame: the tileset frame of a cell value (without its flip bits); -1 for an empty cell.
+pub fn tile_frame(t int) int {
+	return if t < 0 { no_tile } else { t & tile_frame_mask }
+}
+
+// rotated_tile: `frame` turned clockwise by `quarter_turns` * 90 degrees (as flip bits).
+pub fn rotated_tile(frame int, quarter_turns int) int {
+	f := frame & tile_frame_mask
+	return match ((quarter_turns % 4) + 4) % 4 {
+		1 { f | tile_transpose | tile_flip_x }
+		2 { f | tile_flip_x | tile_flip_y }
+		3 { f | tile_transpose | tile_flip_y }
+		else { f }
+	}
+}
 
 // TileLayout — the parsed `layout` of a TileMap.
 pub enum TileLayout {
@@ -497,7 +524,118 @@ pub fn (tm &TileMap) debug_color() core.Color {
 	return core.rgba(120, 200, 255, 110)
 }
 
+// ---------- Animated tiles ----------
+
+// animated_frame: the frame a cell showing `frame` draws at `time` seconds (itself unless it starts an animation).
+pub fn (tm &TileMap) animated_frame(frame int, time f32) int {
+	for i := 0; i + 2 < tm.animations.len; i += 3 {
+		if tm.animations[i] == frame && tm.animations[i + 1] > 1 && tm.animations[i + 2] > 0 {
+			return frame + int(time * f32(tm.animations[i + 2])) % tm.animations[i + 1]
+		}
+	}
+	return frame
+}
+
+// ---------- Autotiling (16-tile edge sets) ----------
+//
+// A terrain is 16 consecutive frames starting at `base`: frame base + mask, where mask has a bit for each edge
+// whose neighbour is the same terrain: 1 = north, 2 = east, 4 = south, 8 = west (isometric / staggered maps:
+// 1 = up-right, 2 = down-right, 4 = down-left, 8 = up-left). So base + 0 is an island, base + 15 the inside.
+// This is the edge-set layout of Tiled's Wang sets ("blob 16"). Hex maps have no edge sets here.
+
+// edge_neighbors: the cells across the 4 edges, in mask-bit order (none for hex maps).
+pub fn (tm &TileMap) edge_neighbors(col int, row int) [][]int {
+	match tm.tile_layout() {
+		.orthogonal, .isometric {
+			return [[col, row - 1], [col + 1, row], [col, row + 1], [col - 1, row]]
+		}
+		.staggered {
+			r := if tm.shifted(row) { 1 } else { 0 } // shifted rows touch col and col + 1 above / below
+			return [[col + r, row - 1], [col + r, row + 1], [col + r - 1, row + 1],
+				[col + r - 1, row - 1]]
+		}
+		else {
+			return [][]int{}
+		}
+	}
+}
+
+// in_terrain: the cell holds one of the 16 frames of the terrain starting at `base`.
+pub fn (tm &TileMap) in_terrain(col int, row int, base int) bool {
+	f := tile_frame(tm.get(col, row))
+	return f >= base && f < base + 16
+}
+
+// terrain_mask: which edges of (col, row) touch the same terrain.
+pub fn (tm &TileMap) terrain_mask(col int, row int, base int) int {
+	mut mask := 0
+	for i, nb in tm.edge_neighbors(col, row) {
+		if tm.in_terrain(nb[0], nb[1], base) {
+			mask |= 1 << i
+		}
+	}
+	return mask
+}
+
+// paint_terrain puts the terrain starting at `base` at (col, row) (-1 = erase it) and re-picks the tile of
+// that cell and of its neighbours of the same terrain, so edges and corners join up.
+pub fn (mut tm TileMap) paint_terrain(col int, row int, base int) {
+	if !tm.in_bounds(col, row) {
+		return
+	}
+	old := tile_frame(tm.get(col, row))
+	tm.set(col, row, if base < 0 { no_tile } else { base })
+	mut cells := [[col, row]]
+	cells << tm.edge_neighbors(col, row)
+	for c in cells {
+		for b in [base, if old >= 0 { old - old % 16 } else { -1 }] {
+			if b >= 0 && tm.in_terrain(c[0], c[1], b) {
+				tm.set(c[0], c[1], b + tm.terrain_mask(c[0], c[1], b))
+			}
+		}
+	}
+}
+
+// autotile_all re-picks every cell of the terrain starting at `base` (after filling cells with `base` from
+// code, or after an import).
+pub fn (mut tm TileMap) autotile_all(base int) {
+	mut todo := [][]int{}
+	for r in 0 .. tm.rows {
+		for c in 0 .. tm.columns {
+			if tm.in_terrain(c, r, base) {
+				todo << [c, r, base + tm.terrain_mask(c, r, base)]
+			}
+		}
+	}
+	for t in todo {
+		tm.set(t[0], t[1], t[2])
+	}
+}
+
 // ---------- Drawing ----------
+
+// tile_uvs: the uv corners (top-left, top-right, bottom-right, bottom-left) of a cell value with flip bits.
+pub fn tile_uvs(t int, u0 f32, v0 f32, u1 f32, v1 f32) [8]f32 {
+	mut out := [8]f32{}
+	corners := [[f32(0), 0], [f32(1), 0], [f32(1), 1], [f32(0), 1]]
+	for k, c in corners {
+		// the bits transform the tile image (transpose first, then flip x, then flip y, as in Tiled), so the
+		// texture point under a corner undoes them in reverse order
+		mut x, mut y := c[0], c[1]
+		if t >= 0 && t & tile_flip_y != 0 {
+			y = 1 - y
+		}
+		if t >= 0 && t & tile_flip_x != 0 {
+			x = 1 - x
+		}
+		if t >= 0 && t & tile_transpose != 0 {
+			x, y = y, x
+		}
+		out[k * 2] = u0 + (u1 - u0) * x
+		out[k * 2 + 1] = v0 + (v1 - v0) * y
+	}
+	return out
+}
 
 // draw_tilemap draws the cells that intersect the clip area, as textured quads in one batch.
 fn (mut r Renderer) draw_tilemap(tm &TileMap, m core.Affine2) {
@@ -531,18 +669,26 @@ fn (mut r Renderer) draw_tilemap(tm &TileMap, m core.Affine2) {
 	// pull UVs a hair inside each frame so neighbouring tiles in the sheet never bleed into seams
 	eu, ev := f32(0.01) / tw, f32(0.01) / th
 	s := r.ctx.scale
-	col := tm.color
+	col := fade(tm.color)
 	sgl.load_pipeline(r.ctx.pipeline.alpha)
 	sgl.enable_texture()
 	sgl.texture(img.simg, img.ssmp)
+	time := if tm.animations.len >= 3 { shader_time(tm.node) } else { f32(0) }
 	sgl.begin_quads()
 	for i in cells {
 		c, row := i % tm.columns, i / tm.columns
 		t := tm.get(c, row)
-		if t < 0 || t >= frames {
+		mut f := tile_frame(t)
+		if f < 0 || f >= frames {
 			continue
 		}
-		fx, fy, fw, fh := tex.frame_rect(t)
+		if tm.animations.len >= 3 {
+			f = tm.animated_frame(f, time)
+			if f >= frames {
+				continue
+			}
+		}
+		fx, fy, fw, fh := tex.frame_rect(f)
 		u0, v0 := f32(fx) / tw + eu, f32(fy) / th + ev
 		u1, v1 := f32(fx + fw) / tw - eu, f32(fy + fh) / th - ev
 		cx, cy := tm.cell_origin(c, row, cs)
@@ -551,10 +697,11 @@ fn (mut r Renderer) draw_tilemap(tm &TileMap, m core.Affine2) {
 		b := m.apply(core.vec2(x + cs.x, y))
 		d := m.apply(core.vec2(x + cs.x, y + cs.y))
 		e := m.apply(core.vec2(x, y + cs.y))
-		sgl.v2f_t2f_c4b(a.x * s, a.y * s, u0, v0, col.r, col.g, col.b, col.a)
-		sgl.v2f_t2f_c4b(b.x * s, b.y * s, u1, v0, col.r, col.g, col.b, col.a)
-		sgl.v2f_t2f_c4b(d.x * s, d.y * s, u1, v1, col.r, col.g, col.b, col.a)
-		sgl.v2f_t2f_c4b(e.x * s, e.y * s, u0, v1, col.r, col.g, col.b, col.a)
+		uv := tile_uvs(t, u0, v0, u1, v1)
+		sgl.v2f_t2f_c4b(a.x * s, a.y * s, uv[0], uv[1], col.r, col.g, col.b, col.a)
+		sgl.v2f_t2f_c4b(b.x * s, b.y * s, uv[2], uv[3], col.r, col.g, col.b, col.a)
+		sgl.v2f_t2f_c4b(d.x * s, d.y * s, uv[4], uv[5], col.r, col.g, col.b, col.a)
+		sgl.v2f_t2f_c4b(e.x * s, e.y * s, uv[6], uv[7], col.r, col.g, col.b, col.a)
 	}
 	sgl.end()
 	sgl.disable_texture()
@@ -577,7 +724,7 @@ pub fn (mut r Renderer) draw_texture_frame(t &assets.Texture, frame int, x f32, 
 pub fn (mut r Renderer) draw_tile_ghost(tm &TileMap, m core.Affine2, tile int, x f32, y f32, w f32, h f32, c gg.Color) {
 	tex := tm.tex
 	if tex == unsafe { nil } || tex.width <= 0 || tex.height <= 0 || tile < 0
-		|| tile >= tex.frame_count() {
+		|| tile_frame(tile) >= tex.frame_count() {
 		return
 	}
 	img := r.image_for(tex) or { return }
@@ -586,9 +733,8 @@ pub fn (mut r Renderer) draw_tile_ghost(tm &TileMap, m core.Affine2, tile int, x
 	}
 	tw, th := f32(tex.width), f32(tex.height)
 	eu, ev := f32(0.01) / tw, f32(0.01) / th
-	fx, fy, fw, fh := tex.frame_rect(tile)
-	u0, v0 := f32(fx) / tw + eu, f32(fy) / th + ev
-	u1, v1 := f32(fx + fw) / tw - eu, f32(fy + fh) / th - ev
+	fx, fy, fw, fh := tex.frame_rect(tile_frame(tile))
+	uv := tile_uvs(tile, f32(fx) / tw + eu, f32(fy) / th + ev, f32(fx + fw) / tw - eu, f32(fy + fh) / th - ev)
 	s := r.ctx.scale
 	a := m.apply(core.vec2(x, y))
 	b := m.apply(core.vec2(x + w, y))
@@ -598,10 +744,10 @@ pub fn (mut r Renderer) draw_tile_ghost(tm &TileMap, m core.Affine2, tile int, x
 	sgl.enable_texture()
 	sgl.texture(img.simg, img.ssmp)
 	sgl.begin_quads()
-	sgl.v2f_t2f_c4b(a.x * s, a.y * s, u0, v0, c.r, c.g, c.b, c.a)
-	sgl.v2f_t2f_c4b(b.x * s, b.y * s, u1, v0, c.r, c.g, c.b, c.a)
-	sgl.v2f_t2f_c4b(d.x * s, d.y * s, u1, v1, c.r, c.g, c.b, c.a)
-	sgl.v2f_t2f_c4b(e.x * s, e.y * s, u0, v1, c.r, c.g, c.b, c.a)
+	sgl.v2f_t2f_c4b(a.x * s, a.y * s, uv[0], uv[1], c.r, c.g, c.b, c.a)
+	sgl.v2f_t2f_c4b(b.x * s, b.y * s, uv[2], uv[3], c.r, c.g, c.b, c.a)
+	sgl.v2f_t2f_c4b(d.x * s, d.y * s, uv[4], uv[5], c.r, c.g, c.b, c.a)
+	sgl.v2f_t2f_c4b(e.x * s, e.y * s, uv[6], uv[7], c.r, c.g, c.b, c.a)
 	sgl.end()
 	sgl.disable_texture()
 }

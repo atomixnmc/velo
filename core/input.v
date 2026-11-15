@@ -137,7 +137,10 @@ pub mut:
 	// Per-frame mouse state (reset by end_frame), set through mouse_press / mouse_release / mouse_scroll.
 	mouse_pressed  bool
 	mouse_released bool
-	scroll         Vec2 // wheel delta this frame (y > 0 = wheel up)
+	// The window lost focus, or the app went to the background or was minimized (this frame only): games
+	// auto-pause on it.
+	focus_lost bool
+	scroll     Vec2 // wheel delta this frame (y > 0 = wheel up)
 	// Fingers currently down, plus the ones lifted this frame. Set through touch_begin / touch_move / touch_end.
 	touches []Touch
 	// True while the mouse fields are emulated by a touch, so mouse-only code keeps working on touch screens.
@@ -216,6 +219,30 @@ pub fn (mut i Input) key_up(code int) {
 	i.released[code] = true
 }
 
+// release_all lets go of every held key, the mouse button and all touches (as released / cancelled this
+// frame). The app calls it when the window loses focus or the app goes to the background: the key-up events
+// of keys held at that moment never arrive, which would leave a character walking forever.
+pub fn (mut i Input) release_all() {
+	for code, d in i.down {
+		if d {
+			i.released[code] = true
+		}
+	}
+	i.down.clear()
+	if i.mouse_down {
+		i.mouse_down = false
+		i.mouse_released = true
+	}
+	i.release_pending = false
+	i.ends_pending.clear()
+	for mut t in i.touches {
+		if !t.is_up() {
+			t.phase = .cancelled
+		}
+	}
+	i.mouse_from_touch = false
+}
+
 pub fn (mut i Input) mouse_press() {
 	if !i.mouse_down {
 		i.mouse_pressed = true
@@ -286,6 +313,7 @@ pub fn (mut i Input) end_frame() {
 	i.text = ''
 	i.text_editing = false
 	i.mouse_pressed = false
+	i.focus_lost = false
 	i.mouse_released = false
 	i.scroll = Vec2{}
 	i.touches = i.touches.filter(!it.is_up())

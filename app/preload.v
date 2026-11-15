@@ -67,32 +67,54 @@ fn (mut p Preloader) start(mut db assets.AssetDatabase, r &render.Renderer, key 
 		p.clock = time.new_stopwatch()
 	}
 	for dep in db.dependencies_deep(id) {
-		e := db.entry(dep) or { continue }
-		if e.kind == .texture && dep !in p.textures {
-			t := db.load[assets.Texture](dep) or { continue }
-			p.textures[dep] = t
-			if !r.has_image(t) {
-				p.queue << LoadJob{
-					id:      dep
-					version: t.version
-					path:    t.path
-				}
+		p.add(mut db, r, dep)
+	}
+	p.total += p.queue.len
+}
+
+// add queues one texture or sound by asset id (other kinds are ignored) and holds a reference until release.
+fn (mut p Preloader) add(mut db assets.AssetDatabase, r &render.Renderer, dep string) {
+	e := db.entry(dep) or { return }
+	if e.kind == .texture && dep !in p.textures {
+		t := db.load[assets.Texture](dep) or { return }
+		p.textures[dep] = t
+		if !r.has_image(t) {
+			p.queue << LoadJob{
+				id:      dep
+				version: t.version
+				path:    t.path
 			}
-		} else if e.kind == .audio && dep !in p.clips {
-			c := db.load[assets.AudioClip](dep) or { continue }
-			p.clips[dep] = c
-			if !audio.mixer().has(c) {
-				p.queue << LoadJob{
-					id:      dep
-					version: c.version
-					path:    c.path
-					audio:   true
-					stream:  c.stream
-				}
+		}
+	} else if e.kind == .audio && dep !in p.clips {
+		c := db.load[assets.AudioClip](dep) or { return }
+		p.clips[dep] = c
+		if !audio.mixer().has(c) {
+			p.queue << LoadJob{
+				id:      dep
+				version: c.version
+				path:    c.path
+				audio:   true
+				stream:  c.stream
 			}
 		}
 	}
-	p.total += p.queue.len
+}
+
+// add_keys queues assets by key (id or path) outside a scene change, e.g. the rigs and effects a battle will
+// spawn from code. Call it while a fade or loading screen hides the scene, then wait for done().
+fn (mut p Preloader) add_keys(mut db assets.AssetDatabase, r &render.Renderer, keys []string) {
+	if p.total == 0 {
+		p.clock = time.new_stopwatch()
+	}
+	before := p.queue.len
+	for key in keys {
+		id := db.resolve(key) or {
+			eprintln('[velo] preload: unknown asset ${key}')
+			continue
+		}
+		p.add(mut db, r, id)
+	}
+	p.total += p.queue.len - before
 }
 
 // pump hands queued jobs to the pool and uploads the finished ones. Call it once per frame.

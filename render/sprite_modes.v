@@ -98,7 +98,9 @@ fn fit_borders(a f32, b f32, len f32) (f32, f32) {
 
 // axis_segments cuts one axis: `len` destination units showing texture pixels [start, start + src_len)
 // with borders b0/b1; `tile` repeats the center band every (src center * scale) units instead of stretching it.
-fn axis_segments(len f32, start int, src_len int, b0 int, b1 int, scale f32, tile bool) []Seg {
+// `orn` (frame pixels [x0, x1) inside the centre band) is an ornament kept at `scale`, centred, with the
+// bands on both sides stretched instead.
+fn axis_segments(len f32, start int, src_len int, b0 int, b1 int, scale f32, tile bool, orn core.Vec2) []Seg {
 	mut out := []Seg{}
 	if len <= 0 || src_len <= 0 {
 		return out
@@ -126,6 +128,17 @@ fn axis_segments(len f32, start int, src_len int, b0 int, b1 int, scale f32, til
 				out << Seg{p, q, mid_src0, mid_src0 + (mid_src1 - mid_src0) * (q - p) / step, true}
 				p = q
 			}
+		} else if orn.y > orn.x && s + orn.x >= mid_src0 && s + orn.y <= mid_src1 {
+			c0, c1 := s + orn.x, s + orn.y
+			ol := math.min((c1 - c0) * scale, mid_len) // the ornament's size on screen
+			a0 := d0 + (mid_len - ol) / 2 // where it starts
+			if a0 > d0 + 0.001 && c0 > mid_src0 {
+				out << Seg{d0, a0, mid_src0, c0, true}
+			}
+			out << Seg{a0, a0 + ol, c0, c1, true}
+			if len - d1 > a0 + ol + 0.001 && mid_src1 > c1 {
+				out << Seg{a0 + ol, len - d1, c1, mid_src1, true}
+			}
 		} else {
 			out << Seg{d0, len - d1, mid_src0, mid_src1, true}
 		}
@@ -144,6 +157,15 @@ pub fn (s &Sprite) quads() []SpriteQuad {
 	}
 	x, y, w, h := s.local_rect()
 	fx, fy, fw, fh := s.tex.frame_rect(s.frame)
+	if s.draw_mode == 'fit' && fw > 0 && fh > 0 && w > 0 && h > 0 {
+		k := math.min(w / f32(fw), h / f32(fh))
+		gw, gh := f32(fw) * k, f32(fh) * k
+		ox, oy := (w - gw) / 2, (h - gh) / 2
+		return [
+			s.flipped(x, y, w, h, Seg{ox, ox + gw, f32(fx), f32(fx + fw), false}, Seg{oy, oy + gh, f32(fy), f32(
+				fy + fh), false}),
+		]
+	}
 	if !s.is_sliced_mode() {
 		return [
 			s.flipped(x, y, w, h, Seg{0, w, f32(fx), f32(fx + fw), false}, Seg{0, h, f32(fy), f32(
@@ -153,8 +175,8 @@ pub fn (s &Sprite) quads() []SpriteQuad {
 	l, t, r, b := s.borders()
 	scale := sprite_pixel_scale(s.pixel_scale)
 	tile := s.draw_mode == 'tiled'
-	xs := axis_segments(w, fx, fw, l, r, scale, tile)
-	ys := axis_segments(h, fy, fh, t, b, scale, tile)
+	xs := axis_segments(w, fx, fw, l, r, scale, tile, s.ornament_x)
+	ys := axis_segments(h, fy, fh, t, b, scale, tile, s.ornament_y)
 	mut out := []SpriteQuad{cap: xs.len * ys.len}
 	for sy in ys {
 		for sx in xs {
@@ -184,7 +206,7 @@ fn (s &Sprite) flipped(x f32, y f32, w f32, h f32, sx Seg, sy Seg) SpriteQuad {
 
 // draw_sprite_quads draws a sliced/tiled sprite as one batch of textured quads through the node's matrix.
 fn (mut r Renderer) draw_sprite_quads(s &Sprite, m core.Affine2) {
-	r.draw_sprite_batch(s, m, r.ctx.pipeline.alpha, []f32{})
+	r.draw_sprite_batch(s, m, r.ctx.pipeline.alpha, []f32{}, 0, s.color)
 }
 
 // draw_sprite_shaded draws any sprite (simple, sliced or tiled) through a shader pipeline (see shader.v).
@@ -197,12 +219,49 @@ fn (mut r Renderer) draw_sprite_shaded(s &Sprite, m core.Affine2, pip sgl.Pipeli
 	}
 	frame := [f32(fx) / tw, f32(fy) / th, f32(fx + fw) / tw, f32(fy + fh) / th]!
 	r.draw_sprite_batch(s, m, pip, shader_uniforms(shader_time(s.node), tw, th, s.shader_params,
-		s.shader_color, frame))
+		s.shader_color, frame), 0, s.color)
+}
+
+// draw_sprite_fx draws the sprite through its node's SpriteFx (effects.v), with room around simple frames.
+fn (mut r Renderer) draw_sprite_fx(s &Sprite, m core.Affine2, pip sgl.Pipeline, fx &SpriteFx) {
+	tex := s.tex
+	fx_, fy, fw, fh := tex.frame_rect(s.frame)
+	tw, th := f32(tex.width), f32(tex.height)
+	if tw <= 0 || th <= 0 {
+		return
+	}
+	frame := [f32(fx_) / tw, f32(fy) / th, f32(fx_ + fw) / tw, f32(fy + fh) / th]!
+	r.draw_sprite_batch(s, m, pip, fx_uniforms(fx, tw, th, frame), fx.padding(), s.color)
+}
+
+// draw_sprite_glow adds the sprite's `glow` over it (additive, same shape: works for every draw mode).
+fn (mut r Renderer) draw_sprite_glow(s &Sprite, m core.Affine2) {
+	if s.glow.a == 0 || s.tex == unsafe { nil } {
+		return
+	}
+	a := u8(u32(s.glow.a) * s.color.a / 255)
+	r.draw_sprite_batch(s, m, r.ctx.pipeline.add, []f32{}, 0, core.Color{u8(u32(s.glow.r) * a / 255), u8(u32(s.glow.g) * a / 255), u8(u32(s.glow.b) * a / 255), a})
+	sgl.load_pipeline(r.ctx.pipeline.alpha)
+}
+
+// padded grows a quad by `pad` texels on every side (its uvs too), for effects drawn outside the frame.
+fn padded(q SpriteQuad, pad f32) SpriteQuad {
+	du, dv := q.u1 - q.u0, q.v1 - q.v0
+	if pad <= 0 || du == 0 || dv == 0 {
+		return q
+	}
+	kx := math.abs(q.w / du) * pad // node units for `pad` texels
+	ky := math.abs(q.h / dv) * pad
+	su := if du > 0 { pad } else { -pad }
+	sv := if dv > 0 { pad } else { -pad }
+	return SpriteQuad{q.x - kx, q.y - ky, q.w + 2 * kx, q.h + 2 * ky, q.u0 - su, q.v0 - sv, q.u1 +
+		su, q.v1 + sv}
 }
 
 // draw_sprite_batch draws the sprite's quads with `pip`; `uniforms` (16 floats, or none) go in sokol_gl's
 // texture matrix, which a velo shader reads as its built-ins.
-fn (mut r Renderer) draw_sprite_batch(s &Sprite, m core.Affine2, pip sgl.Pipeline, uniforms []f32) {
+fn (mut r Renderer) draw_sprite_batch(s &Sprite, m core.Affine2, pip sgl.Pipeline, uniforms []f32, pad f32, col0 core.Color) {
+	col := fade(col0)
 	tex := s.tex
 	if tex.width <= 0 || tex.height <= 0 {
 		return
@@ -211,13 +270,15 @@ fn (mut r Renderer) draw_sprite_batch(s &Sprite, m core.Affine2, pip sgl.Pipelin
 	if !img.simg_ok {
 		return
 	}
-	quads := s.quads()
+	mut quads := s.quads()
+	if pad > 0 && quads.len == 1 {
+		quads = [padded(quads[0], pad)]
+	}
 	if quads.len == 0 {
 		return
 	}
 	tw, th := f32(tex.width), f32(tex.height)
 	sc := r.ctx.scale
-	col := s.color
 	sgl.load_pipeline(pip)
 	if uniforms.len == 16 {
 		sgl.matrix_mode_texture()

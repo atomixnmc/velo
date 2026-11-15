@@ -28,6 +28,13 @@ pub mut:
 	password          bool
 	padding           f32  = 8
 	blur_on_submit    bool = true // Enter also stops editing
+	// rules a Form checks (Form.validate): required, at least min_length characters, and the kind of text
+	required   bool
+	min_length int
+	kind       string = 'text' @[choices: 'text|email|number|integer']
+	error      string @[hide] // what is wrong after the last validate ('' = valid)
+	base_border     core.Color @[hide]
+	has_base_border bool       @[hide]
 	focused           bool         @[hide]
 	changed           bool         @[hide]
 	submitted         bool         @[hide]
@@ -138,6 +145,53 @@ pub fn (mut t TextInput) update(dt f32) {
 }
 
 // shown: what is drawn (dots for a password).
+// check: what is wrong with the text by the field's rules ('' = valid).
+pub fn (t &TextInput) check() string {
+	s := t.text.trim_space()
+	if s == '' {
+		return if t.required { 'required' } else { '' }
+	}
+	if t.min_length > 0 && s.runes().len < t.min_length {
+		return 'at least ${t.min_length} characters'
+	}
+	match t.kind {
+		'email' {
+			at := s.index('@') or { -1 }
+			if at < 1 || !s[at + 1..].contains('.') || s.ends_with('.') || s.contains(' ') {
+				return 'not an email address'
+			}
+		}
+		'number' {
+			if !is_number(s, true) {
+				return 'not a number'
+			}
+		}
+		'integer' {
+			if !is_number(s, false) {
+				return 'not a whole number'
+			}
+		}
+		else {}
+	}
+	return ''
+}
+
+fn is_number(s string, frac bool) bool {
+	mut digits := 0
+	mut dot := false
+	for i, c in s {
+		if c >= `0` && c <= `9` {
+			digits++
+		} else if (c == `-` || c == `+`) && i == 0 {
+		} else if c == `.` && frac && !dot {
+			dot = true
+		} else {
+			return false
+		}
+	}
+	return digits > 0
+}
+
 pub fn (t &TextInput) shown() string {
 	return if t.password { '*'.repeat(t.text.runes().len) } else { t.text }
 }

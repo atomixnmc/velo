@@ -17,12 +17,22 @@ pub fn register_builtins(mut r serialize.Registry) {
 	r.register[Toggle]()
 	r.register[ProgressBar]()
 	r.register[ScrollView]()
+	r.register[Mask]()
+	r.register[Slider]()
+	r.register[ToggleGroup]()
+	r.register[Draggable]()
+	r.register[DropZone]()
+	r.register[UIGroup]()
+	r.register[Form]()
+	r.register[core.Spring]()
 	r.register[Widget]()
 	r.register[Layout]()
 	r.register[Joystick]()
 	r.register[TextInput]()
 	r.register[ParticleSystem]()
 	r.register[TileMap]()
+	r.register[PostProcess]()
+	r.register[SpriteFx]()
 }
 
 // Sprite — draws a texture (or one frame of a sprite sheet) at the node's position.
@@ -30,6 +40,7 @@ pub fn register_builtins(mut r serialize.Registry) {
 //   'simple'  stretches the whole frame
 //   'sliced'  9-slice: the `border_*` edges keep their size, the edges/center stretch (panels, buttons)
 //   'tiled'   repeats the frame (or, with borders, its edges/center between fixed corners)
+//   'fit'     scales the frame to fit inside `size` keeping its aspect ratio (centered), never stretched
 pub struct Sprite {
 	core.Component
 pub mut:
@@ -40,13 +51,20 @@ pub mut:
 	frame     int
 	flip_x    bool
 	flip_y    bool
-	draw_mode string = 'simple' @[choices: 'simple|sliced|tiled']
+	draw_mode string = 'simple' @[choices: 'simple|sliced|tiled|fit']
 	// 9-slice borders in texture pixels, measured inward from the frame's edges.
 	border_left   int
 	border_top    int
 	border_right  int
 	border_bottom int
 	fill_center   bool = true // false: sliced/tiled draw only the border ring (frames, outlines)
+	// Sliced: an ornament in the middle of the edges (a crest, a gem) that keeps its proportions; only the
+	// plain bands beside it stretch. Frame pixels [x0, x1) across (ornament_x) and [y0, y1) down
+	// (ornament_y); [0, 0] = none.
+	ornament_x core.Vec2
+	ornament_y core.Vec2
+	// Additive highlight drawn over the sprite (alpha = strength, 0 = off): hover / pressed glow, selection.
+	glow core.Color = core.Color{255, 255, 255, 0}
 	// World units per texture pixel for the borders and the tile repeat (2 = twice as thick / big).
 	pixel_scale f32 = 1
 	// A .glsl effect to draw with (see shader.v); its PARAMS and PARAM_COLOR built-ins.
@@ -188,13 +206,20 @@ pub mut:
 	line_spacing f32 = 1.25 // line height, in font sizes
 	// Readability over busy backgrounds (alpha 0 = off): a copy drawn behind at `shadow_offset`, and an
 	// outline `outline_width` thick.
-	shadow_color  core.Color   = core.rgba(0, 0, 0, 0)
-	shadow_offset core.Vec2    = core.Vec2{2, 2}
-	outline_color core.Color   = core.rgba(0, 0, 0, 0)
-	outline_width f32          = 1.5
-	font_data     &assets.Font = unsafe { nil } @[hide]
-	layout_key    string       @[hide] // what `layout` was computed for
-	layout        TextBlock    @[hide]
+	shadow_color  core.Color = core.rgba(0, 0, 0, 0)
+	shadow_offset core.Vec2  = core.Vec2{2, 2}
+	outline_color core.Color = core.rgba(0, 0, 0, 0)
+	outline_width f32        = 1.5
+	// Inside the UITransform: `padding` keeps the text this far from the left/right (x) and top/bottom (y)
+	// edges, `offset` nudges it (art whose face is not centred in its image).
+	padding core.Vec2
+	offset  core.Vec2
+	// The UITransform follows the text: width = text width + 2 * padding.x (and height = the text block's
+	// height + 2 * padding.y, unless wrap is on), so a Layout can centre an icon + text group.
+	auto_size  bool
+	font_data  &assets.Font = unsafe { nil } @[hide]
+	layout_key string       @[hide] // what `layout` was computed for
+	layout     TextBlock    @[hide]
 }
 
 pub fn (mut l Label) on_load() {
@@ -262,8 +287,10 @@ fn font_family(f &assets.Font) string {
 
 // text_point: where the text is anchored, in node space (for the given align/valign).
 pub fn (l &Label) text_point() core.Vec2 {
-	t := l.node.get_component[UITransform]() or { return core.Vec2{} }
-	r := t.rect()
+	t := l.node.get_component[UITransform]() or { return l.offset }
+	r0 := t.rect()
+	r :=
+		Rect{r0.x + l.padding.x + l.offset.x, r0.y + l.padding.y + l.offset.y, r0.w - 2 * l.padding.x, r0.h - 2 * l.padding.y}
 	x := match l.align {
 		'center' { r.x + r.w / 2 }
 		'right' { r.x + r.w }

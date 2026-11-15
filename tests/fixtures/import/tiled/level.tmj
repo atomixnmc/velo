@@ -1,0 +1,100 @@
+{
+ "type": "map",
+ "version": "1.10",
+ "orientation": "orthogonal",
+ "renderorder": "right-down",
+ "width": 6,
+ "height": 4,
+ "tilewidth": 16,
+ "tileheight": 16,
+ "infinite": false,
+ "tilesets": [
+  {
+   "firstgid": 1,
+   "source": "terrain.tsx"
+  }
+ ],
+ "layers": [
+  {
+   "type": "tilelayer",
+   "name": "Ground",
+   "width": 6,
+   "height": 4,
+   "visible": true,
+   "opacity": 1,
+   "encoding": "base64",
+   "compression": "zlib",
+   "data": "eJxjZqAOYMOBAQN4ACg="
+  },
+  {
+   "type": "group",
+   "name": "Deco",
+   "layers": [
+    {
+     "type": "tilelayer",
+     "name": "Fade",
+     "width": 6,
+     "height": 4,
+     "visible": true,
+     "opacity": 0.5,
+     "data": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      2
+     ]
+    }
+   ]
+  },
+  {
+   "type": "objectgroup",
+   "name": "Things",
+   "visible": true,
+   "opacity": 1,
+   "objects": [
+    {
+     "id": 1,
+     "name": "Door",
+     "type": "door",
+     "x": 32,
+     "y": 16,
+     "width": 16,
+     "height": 32,
+     "rotation": 0,
+     "visible": true
+    },
+    {
+     "id": 2,
+     "name": "Chest",
+     "gid": 2147483655,
+     "x": 64,
+     "y": 48,
+     "width": 16,
+     "height": 16,
+     "rotation": 0,
+     "visible": true
+    }
+   ]
+  }
+ ]
+}

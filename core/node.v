@@ -30,6 +30,9 @@ pub mut:
 	prefab_id string
 	tweens    []&Tween // see tween()
 	timers    []&Timer // see after() / every()
+	// while the node's components update: removals wait until the loop is done (see remove_component)
+	ticking  bool  @[hide]
+	removals []int @[hide] // component indices (nothing is deleted while ticking, so they stay valid)
 }
 
 pub fn Node.new(name string) &Node {
@@ -192,10 +195,29 @@ pub fn (mut n Node) remove_component(idx int) {
 	if idx < 0 || idx >= n.components.len {
 		return
 	}
+	if n.ticking {
+		// called from a component's update (itself or a sibling): disable it now, remove it after the loop,
+		// so the loop's indices stay valid and no component is skipped
+		n.components[idx].enabled = false
+		if idx !in n.removals {
+			n.removals << idx
+		}
+		return
+	}
 	if n.scene != unsafe { nil } {
 		n.components[idx].on_destroy()
 	}
 	n.components.delete(idx)
+}
+
+// flush_removals removes the components queued during the update loop.
+fn (mut n Node) flush_removals() {
+	mut idx := n.removals.clone()
+	n.removals.clear()
+	idx.sort(b < a) // highest first, so the earlier indices stay right
+	for i in idx {
+		n.remove_component(i)
+	}
 }
 
 // get_component returns the first component of type T.
@@ -296,6 +318,9 @@ fn (mut n Node) attach_to_scene(s &Scene) {
 }
 
 fn (mut n Node) detach_from_scene() {
+	if n.scene == unsafe { nil } {
+		return
+	}
 	for mut ch in n.children {
 		ch.detach_from_scene()
 	}
@@ -316,7 +341,11 @@ fn (mut n Node) tick(dt f32, real f32, paused bool) {
 	if !p {
 		// Snapshot the counts: components/children added during this frame run starting next frame.
 		count := n.components.len
+		n.ticking = true
 		for i in 0 .. count {
+			if n.destroyed {
+				break // destroyed by one of its components: the rest do not run again this frame
+			}
 			if !n.components[i].enabled {
 				continue
 			}
@@ -325,6 +354,10 @@ fn (mut n Node) tick(dt f32, real f32, paused bool) {
 				n.components[i].start()
 			}
 			n.components[i].update(d)
+		}
+		n.ticking = false
+		if n.removals.len > 0 {
+			n.flush_removals()
 		}
 		n.tick_timers(d)
 		n.tick_tweens(d)

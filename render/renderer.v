@@ -1,6 +1,10 @@
 module render
 
 import gg
+import math
+import os
+import sokol.gfx
+import time
 import velo.core
 import velo.assets
 
@@ -21,10 +25,13 @@ pub interface DebugShape {
 @[heap]
 pub struct Renderer {
 mut:
-	ctx     &gg.Context
-	db      &assets.AssetDatabase
-	gpu     map[string]GpuImage  // texture ID -> GPU image
-	shaders map[string]GpuShader // shader asset ID -> pipeline
+	ctx &gg.Context
+	db  &assets.AssetDatabase
+	gpu map[string]GpuImage // texture ID -> GPU image
+	// Samplers shared by every texture (gg makes one per image, and sokol's pool holds only 64): see share_sampler.
+	smp_linear  gfx.Sampler
+	smp_nearest gfx.Sampler
+	shaders     map[string]GpuShader // shader asset ID -> pipeline
 pub mut:
 	debug bool // F1: draw node bounds + center
 	// Draw DebugShape outlines (colliders) even when `debug` is off (the editor turns it on).
@@ -34,6 +41,14 @@ pub mut:
 	// Zero size = the whole window.
 	base_clip Rect
 	clip      Rect @[hide]
+	// cap height / font size per font family (measured once from "H"), for optical vertical centring
+	cap_ratio map[string]f32
+	// Fullscreen post-processing (postfx.v): false skips it even when the scene has a PostProcess (low-end).
+	postfx_enabled bool = true
+	post           PostFx
+	post_comp      &PostProcess = unsafe { nil } // armed for this frame by draw_scene
+	post_time      f32
+	ui_split       bool // draw_tree sends Canvas nodes to the UI layer
 }
 
 pub fn new_renderer(ctx &gg.Context, db &assets.AssetDatabase) &Renderer {
@@ -44,8 +59,17 @@ pub fn new_renderer(ctx &gg.Context, db &assets.AssetDatabase) &Renderer {
 }
 
 // draw_scene draws the scene; `window` maps screen units to window points (see core.ScreenFit.to_window).
+// With a PostProcess in the scene the frame goes through post-processing: finish it with end_frame().
 pub fn (mut r Renderer) draw_scene(scene &core.Scene, window core.Affine2) {
+	r.arm_post(scene)
+	r.ui_split = r.post_comp != unsafe { nil } && !r.post_comp.include_ui
 	r.draw_tree(scene.root, window, scene.view_matrix())
+	r.ui_split = false
+	if r.post_comp != unsafe { nil } {
+		// whatever is drawn next (fades, letterbox bars, debug text) goes over the effects
+		C.sgl_layer(layer_ui)
+		r.set_scissor(r.clip)
+	}
 	ins := scene.safe_insets
 	if r.debug && !ins.is_zero() {
 		o := scene.view_origin
@@ -61,20 +85,55 @@ pub fn (mut r Renderer) draw_tree(root &core.Node, view core.Affine2, camera cor
 	r.draw_calls = 0
 	base := r.base_rect()
 	r.clip = base
+	mut ui_layer := false
 	for it in collect_draw_items(root, view, camera, base) {
+		if it.overlay {
+			if it.clip != r.clip {
+				r.clip = it.clip
+				r.set_scissor(r.clip)
+			}
+			set_fade(it.alpha)
+			r.draw_scrollbars(it.node, it.m)
+			continue
+		}
+		set_fade(it.alpha)
+		if r.ui_split && it.canvas && !ui_layer {
+			ui_layer = true
+			C.sgl_layer(layer_ui)
+			r.set_scissor(it.clip)
+			r.clip = it.clip
+		}
 		if it.clip != r.clip {
 			r.clip = it.clip
 			r.set_scissor(r.clip)
 		}
 		r.draw_node(it.node, it.m)
 	}
+	set_fade(1)
 	r.clip = base
 	r.set_scissor(base)
 }
 
+// draw_scrollbars draws a ScrollView's bars over its content.
+fn (mut r Renderer) draw_scrollbars(n &core.Node, m core.Affine2) {
+	mut sv := n.get_component[ScrollView]() or { return }
+	a := sv.scrollbar_alpha()
+	if a <= 0 {
+		return
+	}
+	for axis in [1, 0] {
+		track, thumb := sv.scrollbar_rects(axis) or { continue }
+		w := sv.scrollbar_width
+		tc := sv.scrollbar_track
+		cc := sv.scrollbar_color
+		r.fill_quad(m, track, w / 2, core.Color{tc.r, tc.g, tc.b, u8(f32(tc.a) * a)})
+		r.fill_quad(m, thumb, w / 2, core.Color{cc.r, cc.g, cc.b, u8(f32(cc.a) * a)})
+	}
+}
+
 // draw_order: the visible nodes of the tree in the order they are drawn (last = on top), e.g. for picking.
 pub fn draw_order(root &core.Node) []&core.Node {
-	return collect_draw_items(root, core.Affine2.identity(), core.Affine2.identity(), Rect{}).map(it.node)
+	return collect_draw_items(root, core.Affine2.identity(), core.Affine2.identity(), Rect{}).filter(!it.overlay).map(it.node)
 }
 
 fn (r &Renderer) base_rect() Rect {
@@ -87,12 +146,14 @@ fn (r &Renderer) base_rect() Rect {
 
 // DrawItem — one node to draw, with its node -> window matrix and the clip rect it is drawn in.
 struct DrawItem {
-	node   &core.Node
-	m      core.Affine2
-	clip   Rect
-	canvas bool // under a Canvas: drawn after (over) the world
-	z      int  // effective z_index (the sum of the node's and its ancestors')
-	seq    int  // tree order (y_sort already applied), keeps equal z in order
+	node    &core.Node
+	m       core.Affine2
+	clip    Rect
+	canvas  bool // under a Canvas: drawn after (over) the world
+	overlay bool // drawn after the node's children: ScrollView scroll bars
+	alpha   f32 = 1 // UIGroup fade of this node (product of its groups)
+	z       int  // effective z_index (the sum of the node's and its ancestors')
+	seq     int  // tree order (y_sort already applied), keeps equal z in order
 }
 
 struct CollectState {
@@ -108,12 +169,12 @@ fn collect_draw_items(root &core.Node, view core.Affine2, camera core.Affine2, c
 		view:     view
 		view_cam: view.mul(camera)
 	}
-	collect_node(mut st, root, core.Affine2.identity(), false, 0, clip)
+	collect_node(mut st, root, core.Affine2.identity(), false, 0, clip, 1)
 	st.items.sort_with_compare(compare_draw_items)
 	return st.items
 }
 
-fn collect_node(mut st CollectState, n &core.Node, parent_world core.Affine2, canvas bool, z int, clip Rect) {
+fn collect_node(mut st CollectState, n &core.Node, parent_world core.Affine2, canvas bool, z int, clip Rect, alpha f32) {
 	if !n.active || n.destroyed {
 		return
 	}
@@ -126,6 +187,15 @@ fn collect_node(mut st CollectState, n &core.Node, parent_world core.Affine2, ca
 	}
 	m := if in_canvas { st.view.mul(w) } else { st.view_cam.mul(w) }
 	zz := z + n.z_index
+	mut a := alpha
+	if g := n.get_component[UIGroup]() {
+		if g.enabled {
+			a *= clamp01(g.alpha)
+		}
+	}
+	if a <= 0 {
+		return // a fully faded group draws nothing
+	}
 	st.items << DrawItem{
 		node:   n
 		m:      m
@@ -133,23 +203,47 @@ fn collect_node(mut st CollectState, n &core.Node, parent_world core.Affine2, ca
 		canvas: in_canvas
 		z:      zz
 		seq:    st.items.len
+		alpha:  a
 	}
-	// ScrollView: children only show inside the viewport (screen-aligned bounds of the rect)
+	// ScrollView / Mask: children only show inside the rect (screen-aligned bounds of the rect)
 	mut child_clip := clip
+	mut bars := false
 	if sv := n.get_component[ScrollView]() {
 		if sv.enabled && sv.clip {
 			if vr := node_rect(n) {
 				child_clip = clip.intersect(screen_bounds(m, vr))
 			}
 		}
+		bars = sv.enabled && sv.scrollbar
+	}
+	if mk := n.get_component[Mask]() {
+		if mk.enabled {
+			if vr := node_rect(n) {
+				child_clip = clip.intersect(screen_bounds(m, vr))
+			}
+		}
+	}
+	defer {
+		if bars {
+			st.items << DrawItem{
+				node:    n
+				m:       m
+				clip:    clip
+				canvas:  in_canvas
+				z:       zz
+				seq:     st.items.len
+				overlay: true
+				alpha:   a
+			}
+		}
 	}
 	if n.y_sort && n.children.len > 1 {
 		for ch in y_sorted(n.children, w) {
-			collect_node(mut st, ch, w, in_canvas, zz, child_clip)
+			collect_node(mut st, ch, w, in_canvas, zz, child_clip, a)
 		}
 	} else {
 		for ch in n.children {
-			collect_node(mut st, ch, w, in_canvas, zz, child_clip)
+			collect_node(mut st, ch, w, in_canvas, zz, child_clip, a)
 		}
 	}
 }
@@ -198,6 +292,11 @@ pub fn (mut r Renderer) on_asset_event(ev assets.AssetEvent) {
 
 fn (mut r Renderer) release_gpu(id string) {
 	if g := r.gpu[id] {
+		// the sampler is shared: keep gg from destroying it with the image
+		mut cached := r.ctx.get_cached_image_by_idx(g.img.id)
+		if cached.simg.id == g.img.simg.id {
+			cached.ssmp = gfx.Sampler{}
+		}
 		r.ctx.remove_cached_image_by_idx(g.img.id)
 		r.gpu.delete(id)
 	}
@@ -219,11 +318,14 @@ fn (mut r Renderer) draw_node(n &core.Node, m core.Affine2) {
 			r.draw_progress(c, m)
 		} else if c is TileMap {
 			r.draw_tilemap(c, m)
+		} else if c is Slider {
+			r.draw_slider(c, m)
 		} else if c is TextInput {
 			r.draw_text_input(c, m)
 		} else if c is MeshDrawable {
+			fx := node_fx(n) // a SpriteFx on the node shades its skeleton / meshes too (effects.v)
 			for mesh in c.meshes() {
-				r.draw_mesh(mesh, m)
+				r.draw_mesh_fx(mesh, m, fx)
 			}
 		}
 		if (r.debug || r.show_shapes) && c is DebugShape {
@@ -258,7 +360,31 @@ fn quad_points(m core.Affine2, rc Rect) []core.Vec2 {
 		m.apply(core.vec2(rc.x + rc.w, rc.y + rc.h)), m.apply(core.vec2(rc.x, rc.y + rc.h))]
 }
 
-fn to_gg(c core.Color) gg.Color {
+// The UIGroup fade of the node being drawn (1 = none), applied by to_gg / fade to every colour drawn.
+@[heap]
+struct FadeState {
+mut:
+	alpha f32 = 1
+}
+
+const fade_state = &FadeState{}
+
+fn set_fade(a f32) {
+	mut s := unsafe { fade_state }
+	s.alpha = a
+}
+
+// fade: `c` with the current UIGroup alpha applied.
+fn fade(c core.Color) core.Color {
+	a := fade_state.alpha
+	if a >= 1 {
+		return c
+	}
+	return core.Color{c.r, c.g, c.b, u8(f32(c.a) * a)}
+}
+
+fn to_gg(c0 core.Color) gg.Color {
+	c := fade(c0)
 	return gg.Color{c.r, c.g, c.b, c.a}
 }
 
@@ -329,12 +455,30 @@ fn (mut r Renderer) draw_progress(p &ProgressBar, m core.Affine2) {
 	t := p.node.get_component[UITransform]() or { return }
 	rc := t.rect()
 	r.fill_quad(m, rc, p.radius, p.back_color)
-	r.fill_quad(m, p.fill_rect(rc), p.radius, p.fill_color)
+	if p.trail_color.a > 0 && p.trail > p.shown_progress() {
+		r.fill_quad(m, p.part(rc, p.trail), p.radius, p.trail_color)
+	}
+	if !p.skinned() {
+		r.fill_quad(m, p.part(rc, p.shown_progress()), p.radius, p.fill_color)
+	}
 }
 
 fn (mut r Renderer) draw_sprite(s &Sprite, m core.Affine2) {
+	r.draw_sprite_body(s, m)
+	r.draw_sprite_glow(s, m)
+}
+
+fn (mut r Renderer) draw_sprite_body(s &Sprite, m core.Affine2) {
 	if s.tex == unsafe { nil } {
 		return
+	}
+	if fx := node_fx(s.node) {
+		if sh := fx.shader() {
+			if pip := r.pipeline_for(sh) {
+				r.draw_sprite_fx(s, m, pip, fx)
+				return
+			}
+		}
 	}
 	if s.shader_data != unsafe { nil } {
 		if pip := r.pipeline_for(s.shader_data) {
@@ -342,7 +486,7 @@ fn (mut r Renderer) draw_sprite(s &Sprite, m core.Affine2) {
 			return
 		}
 	}
-	if s.is_sliced_mode() {
+	if s.is_sliced_mode() || s.draw_mode == 'fit' {
 		r.draw_sprite_quads(s, m)
 		return
 	}
@@ -366,7 +510,7 @@ fn (mut r Renderer) draw_sprite(s &Sprite, m core.Affine2) {
 		rotation:  -rot
 		flip_x:    s.flip_x != (w < 0)
 		flip_y:    s.flip_y != (h < 0)
-		color:     gg.Color{s.color.r, s.color.g, s.color.b, s.color.a}
+		color:     to_gg(s.color)
 	)
 	r.draw_calls++
 	if r.debug {
@@ -392,6 +536,7 @@ fn (r &Renderer) label_layout(l &Label) TextBlock {
 		box = t.rect()
 	}
 	family := font_family(l.font_data)
+	box = Rect{box.x, box.y, box.w - 2 * l.padding.x, box.h - 2 * l.padding.y}
 	key := '${l.text}|${l.size}|${l.wrap}|${l.shrink}|${l.line_spacing}|${box.w}|${box.h}|${family}'
 	if key == l.layout_key {
 		return l.layout
@@ -420,16 +565,25 @@ fn (mut r Renderer) draw_label(l &Label, m core.Affine2) {
 	}
 
 	family := font_family(l.font_data)
+	if l.auto_size {
+		r.fit_label_box(l, family)
+	}
 	anchor := l.text_point()
+	cap := r.cap_height(family)
 	if !l.wrap && !l.shrink && !l.text.contains('\n') {
-		// one line: gg aligns it vertically itself
-		valign := match l.valign {
+		// one line. `middle` centres the capital letters optically (font line metrics differ a lot between
+		// display fonts, so the font's own "middle" sits a few pixels high or low); top / bottom use gg's
+		mut p := m.apply(anchor)
+		mut valign := match l.valign {
 			'middle' { gg.VerticalAlign.middle }
 			'bottom' { gg.VerticalAlign.bottom }
 			else { gg.VerticalAlign.top }
 		}
 
-		p := m.apply(anchor)
+		if l.valign == 'middle' && cap > 0 {
+			valign = .baseline
+			p = m.apply(core.vec2(anchor.x, anchor.y + cap * f32(l.size) / 2))
+		}
 		r.draw_text_fx(l, p, l.text, gg.TextCfg{
 			size:           int(f32(l.size) * k)
 			color:          to_gg(l.color)
@@ -440,6 +594,26 @@ fn (mut r Renderer) draw_label(l &Label, m core.Affine2) {
 		return
 	}
 	block := r.label_layout(l)
+	if l.valign == 'middle' && cap > 0 {
+		// the block from the first line's capitals to the last line's baseline, centred
+		n := block.lines.len
+		c := cap * block.size
+		first := anchor.y - (c + f32(n - 1) * block.line_height) / 2 + c
+		cfg := gg.TextCfg{
+			size:           int(block.size * k)
+			color:          to_gg(l.color)
+			align:          align
+			vertical_align: .baseline
+			family:         family
+		}
+		for i, line in block.lines {
+			if line != '' {
+				r.draw_text_fx(l, m.apply(core.vec2(anchor.x, first + i * block.line_height)),
+					line, cfg, k)
+			}
+		}
+		return
+	}
 	top := match l.valign {
 		'middle' { anchor.y - block.height() / 2 }
 		'bottom' { anchor.y - block.height() }
@@ -458,6 +632,48 @@ fn (mut r Renderer) draw_label(l &Label, m core.Affine2) {
 			continue
 		}
 		r.draw_text_fx(l, m.apply(core.vec2(anchor.x, top + i * block.line_height)), line, cfg, k)
+	}
+}
+
+// cap_height: the height of a capital letter as a fraction of the font size (0 when fonts are not ready).
+pub fn (mut r Renderer) cap_height(family string) f32 {
+	if v := r.cap_ratio[family] {
+		return v
+	}
+	if !r.ctx.font_inited || r.ctx.ft == unsafe { nil } {
+		return 0
+	}
+	r.ctx.set_text_cfg(size: 100, family: family, vertical_align: .baseline)
+	mut b := [4]f32{}
+	r.ctx.ft.fons.text_bounds(0, 0, 'H', &b[0])
+	sc := if r.ctx.scale > 0 { r.ctx.scale } else { f32(1) }
+	v := -b[1] / (100 * sc)
+	ratio := if v > 0.2 && v < 1.2 { v } else { f32(0) }
+	r.cap_ratio[family] = ratio
+	return ratio
+}
+
+// fit_label_box resizes the label's UITransform to its text (auto_size).
+fn (mut r Renderer) fit_label_box(l &Label, family string) {
+	mut t := l.node.get_component[UITransform]() or { return }
+	meas := GgMeasure{r.ctx, family}
+	mut w := f32(0)
+	lines := l.text.split('\n')
+	for line in lines {
+		lw := meas.width(line, l.size)
+		if lw > w {
+			w = lw
+		}
+	}
+	want_w := w + 2 * l.padding.x + 1
+	if !l.wrap && math.abs(t.size.x - want_w) > 0.5 {
+		t.size.x = want_w
+	}
+	if !l.wrap {
+		h := f32(l.size) * (1 + f32(lines.len - 1) * l.line_spacing) + 2 * l.padding.y
+		if math.abs(t.size.y - h) > 0.5 {
+			t.size.y = h
+		}
 	}
 }
 
@@ -538,6 +754,68 @@ const outline_dirs = [core.vec2(-1, 0), core.vec2(1, 0), core.vec2(0, -1),
 	core.vec2(0, 1), core.vec2(-0.7, -0.7), core.vec2(0.7, -0.7),
 	core.vec2(-0.7, 0.7), core.vec2(0.7, 0.7)]
 
+// slow_load_ms: synchronous texture loads at least this long are reported by profile_log.
+const slow_load_ms = 8.0
+
+// profile_log writes a profiling line where VELO_PROFILE says: '1' = stderr, otherwise a file to append to.
+// It does nothing when VELO_PROFILE is not set.
+pub fn profile_log(line string) {
+	to := os.getenv('VELO_PROFILE')
+	if to == '' {
+		return
+	}
+	if to == '1' {
+		eprintln(line)
+		return
+	}
+	if mut f := os.open_append(to) {
+		f.writeln(line) or {}
+		f.close()
+	}
+}
+
+// share_sampler swaps the image's own sampler for the renderer's shared one (same settings: clamp, the
+// texture's filter). gg creates a sampler per image and sokol's sampler pool holds 64, so a scene with more
+// textures than that used to run out (SAMPLER_POOL_EXHAUSTED) and later draws failed validation.
+fn (mut r Renderer) share_sampler(mut img gg.Image, filter gg.TextureFilter) {
+	nearest := filter == .nearest
+	mut common := if nearest { r.smp_nearest } else { r.smp_linear }
+	if common.id == 0 {
+		mut d := gfx.SamplerDesc{}
+		unsafe { vmemset(&d, 0, int(sizeof(d))) }
+		f := if nearest { gfx.Filter.nearest } else { gfx.Filter.linear }
+		d.min_filter = f
+		d.mag_filter = f
+		d.mipmap_filter = .linear
+		d.wrap_u = .clamp_to_edge
+		d.wrap_v = .clamp_to_edge
+		d.label = if nearest { c'velo-nearest' } else { c'velo-linear' }
+		if img.ssmp.id != 0 {
+			gfx.destroy_sampler(img.ssmp) // frees a slot first when the pool is already full
+			img.ssmp = gfx.Sampler{}
+		}
+		common = gfx.make_sampler(&d)
+		if nearest {
+			r.smp_nearest = common
+		} else {
+			r.smp_linear = common
+		}
+	}
+	if common.id == 0 {
+		return
+	}
+	if img.ssmp.id != 0 && img.ssmp.id != common.id {
+		gfx.destroy_sampler(img.ssmp)
+	}
+	img.ssmp = common
+	if img.id >= 0 {
+		mut cached := r.ctx.get_cached_image_by_idx(img.id)
+		if cached.simg.id == img.simg.id {
+			cached.ssmp = common
+		}
+	}
+}
+
 // image_for uploads the texture to the GPU on first use, and re-uploads it when the file changes (hot reload).
 fn (mut r Renderer) image_for(t &assets.Texture) ?gg.Image {
 	if g := r.gpu[t.id] {
@@ -546,11 +824,31 @@ fn (mut r Renderer) image_for(t &assets.Texture) ?gg.Image {
 		}
 		r.release_gpu(t.id)
 	}
+	// A miss here decodes and uploads on the main thread, inside the frame: a visible hitch for big pages.
+	// Preload what a scene needs (app preload) and check VELO_PROFILE output for SLOW lines.
+	t0 := time.sys_mono_now()
+	defer {
+		ms := f64(time.sys_mono_now() - t0) / 1_000_000.0
+		if ms >= slow_load_ms {
+			profile_log('[velo] SLOW texture ${ms:.0f} ms (sync, in frame) ${t.path}')
+		}
+	}
+	if t.path.to_lower().ends_with('.webp') {
+		// gg/stb_image cannot read WebP: decode it ourselves and upload the pixels
+		decoded := decode_image(t.path) or {
+			eprintln('[render] cannot create image ${t.path}: ${err}')
+			return none
+		}
+		r.adopt_image(t, decoded)
+		g := r.gpu[t.id] or { return none }
+		return g.img
+	}
 	filter := if t.filter == 'nearest' { gg.TextureFilter.nearest } else { gg.TextureFilter.linear }
-	img := r.ctx.create_image(t.path, texture_filter: filter) or {
+	mut img := r.ctx.create_image(t.path, texture_filter: filter) or {
 		eprintln('[render] cannot create image ${t.path}: ${err}')
 		return none
 	}
+	r.share_sampler(mut img, filter)
 	// gg (0.5.x) stores the image in its cache BEFORE uploading to the GPU when called mid-frame,
 	// so write the uploaded version back into the cache so draw_image_with_config can use it.
 	mut cached := r.ctx.get_cached_image_by_idx(img.id)

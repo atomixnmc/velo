@@ -1,0 +1,35 @@
+fileFormatVersion: 2
+guid: 2b3c4d5e6f708192a3b4c5d6e7f80112
+TextureImporter:
+  serializedVersion: 12
+  filterMode: 0
+  spriteMode: 2
+  spritePixelsToUnits: 16
+  spriteSheet:
+    serializedVersion: 2
+    sprites:
+    - serializedVersion: 2
+      name: coins_0
+      rect:
+        serializedVersion: 2
+        x: 0
+        y: 0
+        width: 16
+        height: 16
+      internalID: 21300000
+    - serializedVersion: 2
+      name: coins_1
+      rect:
+        serializedVersion: 2
+        x: 16
+        y: 0
+        width: 16
+        height: 16
+      internalID: 21300002
+  internalIDToNameTable:
+  - first:
+      213: 21300000
+    second: coins_0
+  - first:
+      213: 21300002
+    second: coins_1

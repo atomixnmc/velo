@@ -1,0 +1,15 @@
+# Converted from Godot: campfire.tscn (tools/velo_import)
+# Approximations and unsupported settings are listed in the import report.
+node campfire {
+  node Flames {
+    ParticleSystem { max_particles = 48  lifetime = 1.2  looping = true  duration = 1.2  playing = true  rate = 40  world_space = true  additive = true  texture = @asset("imported/godot/fx/flip.png")  angle = -90  spread = 20  speed = 90  speed_var = 30  random_angle = true  gravity = [0, -20]  shape = "circle"  shape_size = [12, 0]  start_size = 12  end_size = 3  size_var = 4  start_color = [255, 255, 153, 0]  end_color = [76, 0, 0, 0]  use_mid_color = true  mid_color = [255, 102, 0, 255]  mid_time = 0.3 }
+  }
+  node Embers {
+    position = [0, -10]
+    ParticleSystem { max_particles = 20  lifetime = 2  looping = true  duration = 2  playing = true  rate = 10  world_space = true  texture = @asset("imported/godot/fx/spark.png")  angle = -90  spread = 30  speed = 30  speed_var = 10  spin = 135  spin_var = 45  gravity = [0, -30]  shape = "box"  shape_size = [80, 10]  start_size = 2.7  end_size = 2.7  size_var = 0.9  start_color = [255, 178, 76, 255]  end_color = [255, 178, 76, 255] }
+    node Logo {
+      rotation = 45
+      Sprite { texture = @asset("imported/godot/fx/flip.png")  frame = 1  flip_x = true  color = [255, 255, 255, 128] }
+    }
+  }
+}

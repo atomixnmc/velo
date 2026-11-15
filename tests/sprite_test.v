@@ -133,12 +133,12 @@ fn test_choices_checked_on_load_and_listed() {
 	if _ := loader.load_scene('bad.scene') {
 		assert false, 'an unknown draw_mode should fail to load'
 	} else {
-		assert err.msg().contains('simple | sliced | tiled')
+		assert err.msg().contains('simple | sliced | tiled | fit')
 	}
 	info := reg.get('Sprite') or { panic('not registered') }
 	for f in info.fields {
 		if f.name == 'draw_mode' {
-			assert f.choices == ['simple', 'sliced', 'tiled']
+			assert f.choices == ['simple', 'sliced', 'tiled', 'fit']
 		} else {
 			assert f.choices.len == 0
 		}

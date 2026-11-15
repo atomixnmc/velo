@@ -32,6 +32,12 @@ mut:
 
 // draw_mesh draws `mesh` through the node matrix `m` (so rotation, non-uniform scale and flips all apply).
 pub fn (mut r Renderer) draw_mesh(mesh TexturedMesh, m core.Affine2) {
+	r.draw_mesh_fx(mesh, m, none)
+}
+
+// draw_mesh_fx draws `mesh` through a SpriteFx effect when one is given (textured, alpha-blended meshes only;
+// FRAME_RECT is the whole page, TEXTURE_SIZE the page size).
+pub fn (mut r Renderer) draw_mesh_fx(mesh TexturedMesh, m core.Affine2, fx ?&SpriteFx) {
 	textured := mesh.texture != unsafe { nil }
 	if mesh.indices.len < 3 || (textured && mesh.uvs.len < mesh.positions.len) {
 		return
@@ -46,6 +52,21 @@ pub fn (mut r Renderer) draw_mesh(mesh TexturedMesh, m core.Affine2) {
 	c := mesh.color
 	per_vertex := mesh.colors.len >= nverts
 	sgl.load_pipeline(if mesh.additive { r.ctx.pipeline.add } else { r.ctx.pipeline.alpha })
+	mut shaded := false
+	if textured && !mesh.additive {
+		if f := fx {
+			if sh := f.shader() {
+				if pip := r.pipeline_for(sh) {
+					sgl.load_pipeline(pip)
+					sgl.matrix_mode_texture()
+					sgl.push_matrix()
+					sgl.load_matrix(fx_uniforms(f, f32(mesh.texture.width), f32(mesh.texture.height),
+						[f32(0), 0, 1, 1]!))
+					shaded = true
+				}
+			}
+		}
+	}
 	if textured {
 		img := r.image_for(mesh.texture) or { return }
 		if !img.simg_ok {
@@ -57,13 +78,17 @@ pub fn (mut r Renderer) draw_mesh(mesh TexturedMesh, m core.Affine2) {
 	sgl.begin_triangles()
 	for i in mesh.indices[..mesh.indices.len - mesh.indices.len % 3] {
 		p := m.apply(core.vec2(mesh.positions[i * 2], mesh.positions[i * 2 + 1]))
-		vc := if per_vertex { mul_color(c, mesh.colors[i]) } else { c }
+		vc := fade(if per_vertex { mul_color(c, mesh.colors[i]) } else { c })
 		u, v := if textured { mesh.uvs[i * 2], mesh.uvs[i * 2 + 1] } else { f32(0), f32(0) }
 		sgl.v2f_t2f_c4b(p.x * s, p.y * s, u, v, vc.r, vc.g, vc.b, vc.a)
 	}
 	sgl.end()
 	if textured {
 		sgl.disable_texture()
+	}
+	if shaded {
+		sgl.pop_matrix()
+		sgl.matrix_mode_projection()
 	}
 	sgl.load_pipeline(r.ctx.pipeline.alpha)
 	r.draw_calls++

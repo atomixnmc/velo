@@ -54,9 +54,10 @@ pub fn decode_wav(b []u8) !Sound {
 	mut i := 12
 	for i + 8 <= b.len {
 		id := b[i..i + 4].bytestr()
-		size := int(binary.little_endian_u32(b[i + 4..i + 8]))
+		// sizes are u32: kept as i64 so a damaged (huge) size can neither go negative nor loop forever
+		size := i64(binary.little_endian_u32(b[i + 4..i + 8]))
 		body := i + 8
-		end := if size < 0 || body + size > b.len { b.len } else { body + size }
+		end := if i64(body) + size > i64(b.len) { b.len } else { body + int(size) }
 		if id == 'fmt ' && end - body >= 16 {
 			format = int(binary.little_endian_u16(b[body..body + 2]))
 			channels = int(binary.little_endian_u16(b[body + 2..body + 4]))
@@ -69,7 +70,11 @@ pub fn decode_wav(b []u8) !Sound {
 			pcm = unsafe { b[body..end] } // only read below, while `b` is alive
 			found_data = true
 		}
-		i = body + size + (size & 1) // chunks are padded to an even size
+		next := i64(body) + size + (size & 1) // chunks are padded to an even size
+		if next > i64(b.len) {
+			break // the chunk runs past the end of the file: nothing follows it
+		}
+		i = int(next)
 	}
 	if channels <= 0 || rate <= 0 || !found_data {
 		return error('WAV file without a "fmt " or "data" chunk')

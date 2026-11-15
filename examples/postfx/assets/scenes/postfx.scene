@@ -1,0 +1,36 @@
+# Post-processing showcase: a dark scene with bright, coloured lights. PostFxShowcase cycles the presets
+# (keys 1-9, Space = next, F = flash, S = shader pass on/off, P = post-processing on/off).
+node PostFx {
+  PostProcess { preset = "gothic_night" }
+  node Background {
+    position = [480, 270]
+    Sprite { texture = @asset("b8c1e2a3")  size = [960, 540]  color = [120, 130, 150, 255] }
+  }
+  node Lights {
+    node Red    { position = [180, 300]  Sprite { texture = @asset("5d9a0c66")  size = [90, 90]  color = [255, 70, 50, 255] } }
+    node Green  { position = [330, 220]  Sprite { texture = @asset("5d9a0c66")  size = [70, 70]  color = [80, 255, 120, 255] } }
+    node Blue   { position = [480, 320]  Sprite { texture = @asset("5d9a0c66")  size = [110, 110]  color = [90, 140, 255, 255] } }
+    node Violet { position = [630, 220]  Sprite { texture = @asset("5d9a0c66")  size = [70, 70]  color = [210, 90, 255, 255] } }
+    node Gold   { position = [780, 300]  Sprite { texture = @asset("5d9a0c66")  size = [90, 90]  color = [255, 220, 90, 255] } }
+    node Embers {
+      position = [480, 470]
+      ParticleSystem { rate = 30  lifetime = 2.5  lifetime_var = 1  speed = 40  speed_var = 20  spread = 40  angle = -90  shape = "box"  shape_size = [800, 20]  start_size = 6  end_size = 2  start_color = [255, 160, 60, 255]  end_color = [255, 60, 20, 0]  additive = true }
+    }
+    node Coin   { position = [480, 140]  scale = [4, 4]  Sprite { texture = @asset("c0149b7d") } }
+    node Hero   { position = [300, 420]  scale = [3, 3]  Sprite { texture = @asset("a1f3c9e2") } }
+  }
+  node UI {
+    Canvas { }
+    PostFxShowcase { }
+    node Name {
+      UITransform { size = [900, 40] }
+      Widget { align_center_x = true  align_top = true  top = 12 }
+      Label { text = "gothic_night"  size = 30  align = "center"  valign = "middle"  color = [255, 255, 255, 255]  outline_color = [0, 0, 0, 255]  outline_width = 2 }
+    }
+    node Help {
+      UITransform { size = [900, 30] }
+      Widget { align_center_x = true  align_bottom = true  bottom = 8 }
+      Label { text = "1-9 preset   Space next   F flash   S shader pass   P post on/off   (UI is not post-processed)"  size = 16  align = "center"  valign = "middle"  color = [220, 220, 220, 255] }
+    }
+  }
+}
