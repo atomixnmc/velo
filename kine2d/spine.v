@@ -199,6 +199,8 @@ pub mut:
 	slots      []SpSlot
 	skins      []SpSkin
 	iks        []SpIk
+	physics    []SpPhysics // physics constraints (spine_physics.v)
+	reference_scale f32 = 100 // skeleton.referenceScale: physics wind / gravity are per 100 units
 	animations map[string]SpAnimation
 	names      []string
 	skipped    []string // features present in the file but not applied (see spine_pose.v)
@@ -240,6 +242,7 @@ pub fn parse_spine_skeleton(src string) !SpineData {
 		d.version = str(sk, 'spine')
 		d.width = num(sk, 'width', 0)
 		d.height = num(sk, 'height', 0)
+		d.reference_scale = num(sk, 'referenceScale', 100)
 	}
 	if !d.version.starts_with('4.2') {
 		return error('spine: version "${d.version}" is not 4.2')
@@ -305,7 +308,31 @@ pub fn parse_spine_skeleton(src string) !SpineData {
 		}
 		d.iks << ik
 	}
-	for k in ['transform', 'path', 'physics'] {
+	for v in arr(root, 'physics') {
+		m := obj(v) or { continue }
+		fps := num(m, 'fps', 60)
+		mass := num(m, 'mass', 1)
+		d.physics << SpPhysics{
+			name:     str(m, 'name')
+			order:    int(num(m, 'order', 0))
+			bone:     bone_index[str(m, 'bone')] or { continue }
+			x:        num(m, 'x', 0)
+			y:        num(m, 'y', 0)
+			rotate:   num(m, 'rotate', 0)
+			scale_x:  num(m, 'scaleX', 0)
+			shear_x:  num(m, 'shearX', 0)
+			limit:    num(m, 'limit', 5000)
+			step:     if fps > 0 { 1 / fps } else { f32(1.0 / 60) }
+			inertia:  num(m, 'inertia', 1)
+			strength: num(m, 'strength', 100)
+			damping:  num(m, 'damping', 1)
+			mass_inv: if mass > 0 { 1 / mass } else { 1 }
+			wind:     num(m, 'wind', 0)
+			gravity:  num(m, 'gravity', 0)
+			mix:      num(m, 'mix', 1)
+		}
+	}
+	for k in ['transform', 'path'] {
 		if arr(root, k).len > 0 {
 			d.skipped << '${k} constraints'
 		}

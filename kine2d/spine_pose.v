@@ -8,7 +8,8 @@ import math
 // alpha and draw order timelines, mesh deform (4.2 layout), linear / stepped / bezier curves, all five
 // bone inherit modes, 1- and 2-bone IK constraints with their mix / bendPositive timelines, region and
 // (weighted) mesh attachments, linked meshes, skins (the chosen skin, then `default`), additive blending.
-// Not applied (listed in SpineData.skipped when a file uses them): transform / path / physics constraints,
+// Physics constraints: spine_physics.v (stateful; Kine2D steps them).
+// Not applied (listed in SpineData.skipped when a file uses them): transform / path constraints,
 // IK softness / stretch / compress, clipping, attachment sequences, tint black, events, multiply / screen
 // blending (drawn normally).
 
@@ -460,6 +461,12 @@ pub mut:
 
 // pose evaluates `anim` (or the setup pose) at `t` seconds.
 pub fn (d &SpineData) pose(anim ?SpAnimation, t f32) SpinePose {
+	p, _ := d.pose_locals(anim, t)
+	return p
+}
+
+// pose_locals: the pose and the bones' applied local transforms (physics recomputes children from them).
+fn (d &SpineData) pose_locals(anim ?SpAnimation, t f32) (SpinePose, []SpLocal) {
 	mut locals := d.bones.map(SpLocal{it.x, it.y, it.rotation, it.scale_x, it.scale_y, it.shear_x, it.shear_y})
 	mut p := SpinePose{
 		world:  []SpWorld{len: d.bones.len}
@@ -586,7 +593,7 @@ pub fn (d &SpineData) pose(anim ?SpAnimation, t f32) SpinePose {
 			d.update_all(locals, mut p.world)
 		}
 	}
-	return p
+	return p, locals
 }
 
 // find_attachment looks the attachment up in `skin`, then in the default skin.
@@ -613,7 +620,18 @@ pub fn (d &SpineData) find_attachment(skin string, slot int, name string) ?SpAtt
 
 // build returns the drawable pieces of `anim` at `t` seconds, in draw order (y down).
 pub fn (d &SpineData) build(atlas &SpAtlas, anim ?SpAnimation, t f32, skin string) []SpPiece {
-	p := d.pose(anim, t)
+	return d.build_pose(atlas, d.pose(anim, t), skin)
+}
+
+// build_physics: build() with the physics offsets of `run` applied.
+pub fn (d &SpineData) build_physics(atlas &SpAtlas, anim ?SpAnimation, t f32, skin string, run &SpPhysicsRun) []SpPiece {
+	if d.physics.len == 0 || run.states.len == 0 {
+		return d.build(atlas, anim, t, skin)
+	}
+	return d.build_pose(atlas, d.pose_physics(anim, t, run), skin)
+}
+
+fn (d &SpineData) build_pose(atlas &SpAtlas, p SpinePose, skin string) []SpPiece {
 	mut out := []SpPiece{}
 	for si in p.order {
 		name := p.attach[si]

@@ -71,6 +71,12 @@ pub mut:
 	// Canvas size the rig was built on (bone positions scale with it). 0 = the export's canvasSize,
 	// or 800x600 for exports that have none.
 	canvas_size core.Vec2
+	// Spine physics constraints (cloth, hair): on by default. `wind` blows along world +x (skeleton units,
+	// as Spine's constraint wind), whichever way the rig is mirrored; `gust` (0..1) makes it rise and fall.
+	physics     bool = true
+	wind        f32
+	gust        f32
+	phys        SpPhysicsRun      @[hide]
 	time        f32               @[hide] // seconds into the current animation
 	finished    bool              @[hide] // a non-looping animation reached its end (it then stops playing)
 	skeleton    SkeletonData      @[hide]
@@ -100,6 +106,26 @@ pub fn (mut k Kine2D) update(dt f32) {
 	if k.animation != k.current {
 		k.restart()
 	}
+	k.advance(dt)
+	if k.is_spine && k.physics && k.spine.physics.len > 0 {
+		mut flip := f32(1)
+		mut phase := f32(0)
+		if k.node != unsafe { nil } {
+			m := k.node.world_matrix()
+			// skeleton units, y up: moving the character swings its cloth
+			k.phys.ox = if m.a != 0 { m.tx / m.a } else { 0 }
+			k.phys.oy = if m.d != 0 { -m.ty / m.d } else { 0 }
+			flip = if m.a < 0 { f32(-1) } else { f32(1) }
+			phase = f32(u64(voidptr(k.node)) % 997) * 0.01 // neighbours don't sway in lockstep
+		}
+		t := f64(k.phys.time)
+		g := 0.6 * math.sin(0.9 * t + phase) + 0.4 * math.sin(2.3 * t + 1.7 * phase)
+		k.phys.wind = k.wind * flip * (1 + k.gust * f32(g))
+		k.spine.step_physics(k.current_spine_animation(), k.time, mut k.phys, dt * k.speed)
+	}
+}
+
+fn (mut k Kine2D) advance(dt f32) {
 	if !k.playing {
 		return
 	}
@@ -240,7 +266,7 @@ fn (k &Kine2D) spine_meshes() []render.TexturedMesh {
 	mut cols := []core.Color{}
 	mut cur_page := -1
 	mut cur_add := false
-	for p in k.spine.build(k.spine_atlas, k.current_spine_animation(), k.time, k.skin) {
+	for p in k.spine.build_physics(k.spine_atlas, k.current_spine_animation(), k.time, k.skin, &k.phys) {
 		tex := k.pages[p.page] or { continue }
 		if tex.width <= 0 || tex.height <= 0 {
 			continue
@@ -403,6 +429,7 @@ fn (mut k Kine2D) load_spine(mut db assets.AssetDatabase, data_id string, atlas_
 	k.drop()
 	k.is_spine = true
 	k.spine = data
+	k.phys.reset()
 	k.spine_atlas = atlas
 	k.pages = pages
 	k.held = held
