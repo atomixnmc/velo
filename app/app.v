@@ -30,6 +30,9 @@ pub:
 	app_id string
 	// Where to save the player's data instead of the platform's usual place (desktop and phones).
 	save_file string
+	// Multisample anti-aliasing for the window (smooth mesh / Spine edges): 4 by default, 1 = off. VELO_MSAA=<n>
+	// overrides it.
+	msaa int = 4
 	// Set this hook to run code after each time the scene is (re)loaded.
 	on_scene_loaded fn (mut a App) = unsafe { nil }
 }
@@ -120,6 +123,13 @@ pub fn (mut a App) load_scene(key string) ! {
 	println('[velo] loaded scene "${a.db.path_of(a.scene_id) or { key }}" (${a.scene.node_count()} nodes, ${a.db.loaded_count()} assets in memory)')
 }
 
+// msaa_samples: the configured sample count (VELO_MSAA overrides), limited to 1, 2, 4 or 8.
+fn msaa_samples(cfg int) int {
+	env := os.getenv('VELO_MSAA')
+	n := if env != '' { env.int() } else { cfg }
+	return if n >= 8 { 8 } else if n >= 4 { 4 } else if n >= 2 { 2 } else { 1 }
+}
+
 pub fn (mut a App) run() {
 	a.ctx = gg.new_context(
 		bg_color:     gg.Color{a.cfg.background.r, a.cfg.background.g, a.cfg.background.b, 255}
@@ -134,6 +144,7 @@ pub fn (mut a App) run() {
 		user_data:    a
 		// 0 = gg does not sleep its fixed 60 Hz budget (pace_frame); vsync is turned back on below on the window.
 		swap_interval: 0
+		sample_count:  msaa_samples(a.cfg.msaa)
 	)
 	$if android {
 		// sokol asks for GLES 3.1 by default, which emulators and older devices lack; gg only needs 3.0.
@@ -158,6 +169,7 @@ fn on_init(mut a App) {
 		hide_window_for_capture()
 	}
 	a.renderer = render.new_renderer(a.ctx, a.db)
+	render.profile_log('[velo] window ${sapp.width()}x${sapp.height()}, ${sapp.sample_count()}x MSAA')
 	audio.start()
 	// VELO_MUTE=1 or a silent capture (VELO_CAPTURE): the device stays open (the mixer needs it) but the master
 	// gain is 0, so hidden test runs make no sound. Nothing else sets the master gain.

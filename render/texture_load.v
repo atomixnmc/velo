@@ -3,6 +3,7 @@ module render
 import os
 import gg
 import stbi
+import sokol.gfx
 import velo.assets
 import velo.webp
 
@@ -12,6 +13,7 @@ pub:
 	width  int
 	height int
 	data   voidptr // stbi buffer, 4 bytes per pixel; adopt_image frees it
+	mips   MipChain // the smaller levels, built with the pixels (see mipmaps.c.v)
 }
 
 // decode_image reads and decodes an image file to RGBA. It touches no GPU state, so any thread may call it.
@@ -34,10 +36,10 @@ pub fn decode_image(path string) !DecodedImage {
 			return error('out of memory decoding "${path}"')
 		}
 		unsafe { vmemcpy(buf, img.rgba.data, img.rgba.len) }
-		return DecodedImage{img.width, img.height, buf}
+		return DecodedImage{img.width, img.height, buf, build_mips(buf, img.width, img.height)}
 	}
 	img := stbi.load_from_memory(bytes.data, bytes.len)!
-	return DecodedImage{img.width, img.height, img.data}
+	return DecodedImage{img.width, img.height, img.data, build_mips(img.data, img.width, img.height)}
 }
 
 // free_decoded releases pixels that will not be uploaded after all.
@@ -46,6 +48,13 @@ pub fn free_decoded(img DecodedImage) {
 		stbi.Image{
 			data: img.data
 		}.free()
+	}
+	free_mips(img.mips)
+}
+
+fn free_mips(m MipChain) {
+	if m.data != unsafe { nil } {
+		unsafe { free(m.data) }
 	}
 }
 
@@ -75,7 +84,22 @@ pub fn (mut r Renderer) adopt_image(t &assets.Texture, decoded DecodedImage) {
 			gg.TextureFilter.linear
 		}
 	}
-	img.init_sokol_image()
+	// the GPU image with its mip chain ('nearest' pixel art keeps one level: no blur when scaled down)
+	mut d := gfx.ImageDesc{}
+	unsafe { vmemset(&d, 0, int(sizeof(d))) }
+	d.width = decoded.width
+	d.height = decoded.height
+	d.pixel_format = .rgba8
+	d.label = &char(t.path.str)
+	fill_mips(mut d, decoded.data, decoded.width, decoded.height, if t.filter == 'nearest' {
+		MipChain{}
+	} else {
+		decoded.mips
+	})
+	img.simg = gfx.make_image(&d)
+	img.nr_mipmaps = d.num_mipmaps
+	img.simg_ok = img.simg.id != 0
+	img.ok = img.simg_ok
 	// sokol copied the pixels into the (immutable) GPU image
 	free_decoded(decoded)
 	img.data = unsafe { nil }
